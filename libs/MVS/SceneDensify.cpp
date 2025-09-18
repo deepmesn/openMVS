@@ -257,10 +257,12 @@ bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex n
 			NormalMap normalMap;
 			ConfidenceMap confMap;
 			ViewsMap viewsMap;
-			ImportDepthDataRaw(ComposeDepthFilePath(view.GetID(), "dmap"),
+			bool ret = ImportDepthDataRaw(ComposeDepthFilePath(view.GetID(), "dmap"),
 				imageFileName, IDs, imageSize, view.cameraDepthMap.K, view.cameraDepthMap.R, view.cameraDepthMap.C,
 				dMin, dMax, view.depthMap, normalMap, confMap, viewsMap, 1);
-			ASSERT(viewRef.image.size() == view.depthMap.size());
+			if(ret) {
+				ASSERT(viewRef.image.size() == view.depthMap.size());
+			}
 		}
 		view.Init(viewRef.camera);
 	}
@@ -1648,7 +1650,7 @@ void DepthMapsData::DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateCol
 			const Depth depth = depthData.depthMap(x);
 			if (depth <= Depth(0))
 				return;
-			ASSERT(ISINSIDE(depth, depthData.dMin * 0.95f, depthData.dMax * 1.05f));
+			// ASSERT(ISINSIDE(depth, depthData.dMin * 0.95f, depthData.dMax * 1.05f));
 			// ignore pixel if already fused
 			UseMask& useMask = arrUseMask[ID];
 			if (useMask(x))

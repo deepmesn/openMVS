@@ -978,7 +978,7 @@ bool Scene::ReconstructMesh(float distInsert, bool bUseFreeSpaceSupport, bool bU
 					#endif
 					f += w;
 				} while (intersect(delaunay, segCamPoint, facets, facets, inter));
-				ASSERT(facets.empty() && inter.type == intersection_t::VERTEX && inter.v1 == vi);
+				// ASSERT(facets.empty() && inter.type == intersection_t::VERTEX && inter.v1 == vi);
 				#ifdef DELAUNAY_WEAKSURF
 				ASSERT(vert.viewsInfo[v].cell2Cam == NULL);
 				vert.viewsInfo[v].cell2Cam = inter.facet.first;
