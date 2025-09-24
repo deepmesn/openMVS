@@ -12,13 +12,6 @@ namespace MVS::ARKIT {
     static const std::string DEPTHMAP_SUFFIX = "_depth.raw";
     static const std::string FEATURE_SUFFIX = "_feat.txt";
 
-    // static const double minAngle = FD2R(OPTDENSE::fMinAngle);
-    // static const double maxAngle = FD2R(OPTDENSE::fMaxAngle);
-
-    // static const float fOptimAngle = 12.f * M_PI/180;
-	// static const float sigmaAngleSmall(-1.f/(2.f*SQUARE(OPTDENSE::fOptimAngle*0.38f)));
-	// static const float sigmaAngleLarge(-1.f/(2.f*SQUARE(OPTDENSE::fOptimAngle*0.7f)));
-
     // reference the score structure from scene.cpp#SelectNeighborViews#Score
    	struct Score {
         Score(): score(0.f), avgScale(0.f), avgAngle(0.f), points(0){}
@@ -35,40 +28,55 @@ namespace MVS::ARKIT {
         std::string image_name;
         std::string meta_name;
         std::string depthmap_name;
-        bool valid;
 
         ARKITFrame(int index, const std::string& base_name, const std::string& img, const std::string& meta, const std::string& depth)
-            : index(index), base_name(base_name), image_name(img), meta_name(meta), depthmap_name(depth), valid(true) {}        
+            : index(index), base_name(base_name), image_name(img), meta_name(meta), depthmap_name(depth) {}     
     };
 
     struct ARKITScene {
-        ARKITScene(const std::string& artkit_dir):artkit_dir(artkit_dir), imageSize(), depthMapSize() {}
+        // the ownership of `scene` shall belong to OpenMVS codes, 
+        // which should handle its construciton and serialization.        
+        ARKITScene(Scene *scene): scene(scene), depthMapSize() {}
 
-        // build Scene instance from ARKIT depthmaps
-        void build(Scene& scene);
+        // build Scene instance from ARKIT depthmaps,
+        void build(const std::string& artkit_dir);
+
+        // Load arkit frames
+        void load(const std::string& meta_json_path);
 
         // Return the interpolated depthmap wiht `newSize`
         cv::Mat getDepthMap(int index, const cv::Size& newSize = cv::Size());
 
-        void selectNeighbors(Scene& scene);
+        // Typical OpenmMVG + OpenMVS pipeline:
+        // 1) OpenMVG generates a sparse point cloud where each point
+        // associated with several images, determined through feature matching and bundle adjustment
+        // 2) OpenMVS then uses these local releatinships to do the global selection that computing best neighboring views for each image.
+        // ARKIT pipeline:
+        // 1) ARKIT outputs depthmaps, skiping feature matching and BA
+        // 2) Global selection is performed through visibility test using ARKIT depthmap
+        void selectViews();
+
+        // Select views for reference image with visibility, 
+        // please refers to libs/MVS/SceneDensify.cpp#SelectViews for the detail rules
         void selectViews(Image& imageData, const std::vector<Camera>& cameras, const std::vector<cv::Mat>& depthMaps, float reprojectDepthError = 0.01);
 
-        void buildCoarsePointcloud(const Scene& scene, const std::string& ply_path);
+        // The bridge between OpenMVS pipeline and ARKIT used to replace the global selection 
+        void selecViews(DepthData& depthData);
 
-        Camera loadCamera(const Scene& scene, int index, cv::Size newSize, bool transToRef = true);
+        void buildCoarsePointcloud(const std::string& ply_path);
 
-        // arkit dir
-        const std::string artkit_dir;
+        Camera loadCamera(int index, cv::Size newSize, bool transToRef = true);
+
+        // Serializes only arkit frames
+        void save(const std::string& meta_json_path);
+
+        Scene *scene;
 
         // arkit frames
         std::vector<ARKITFrame> arkitFrames;
 
-        cv::Size imageSize;
-
         // raw depthmap size
         cv::Size depthMapSize;
-
-        std::vector<Matrix4x4> extrinsics;
     };
 
 }

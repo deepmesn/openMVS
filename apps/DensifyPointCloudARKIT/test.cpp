@@ -255,11 +255,12 @@ int main(int argc, LPCTSTR* argv) {
 		return EXIT_FAILURE;    
     Scene scene(1);
 
-    ARKITScene arkitScene("/data/reconstruction/clock/clock/clock");
-    arkitScene.build(scene);
+    ARKITScene arkitScene(&scene);
+    arkitScene.build("/data/reconstruction/clock/clock/clock");
     // arkitScene.buildCoarsePointcloud(scene, "/data/reconstruction/clock/clock/clock/bbb.ply");
-    arkitScene.selectNeighbors(scene);
+    arkitScene.selectViews();
 
+    scene.Save("/data/reconstruction/clock/clock/clock/scene.mvs", (ARCHIVE_TYPE)OPT::nArchiveType);
     std::cout << "Entries :" << arkitScene.arkitFrames.size() << std::endl;
     return 0;
 }

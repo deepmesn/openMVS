@@ -8,12 +8,6 @@ namespace MVS::ARKIT {
     using namespace SEACAVE;
     namespace fs = std::filesystem;
     using json = nlohmann::json;
-    
-
-    // const double optimAngle = FD2R(OPTDENSE::fOptimAngle);
-
-   	// const float sigmaAngleSmall(-1.f/(2.f*SQUARE(optimAngle*0.38f)));
-	// const float sigmaAngleLarge(-1.f/(2.f*SQUARE(optimAngle*0.7f)));
 
     // Read depth map from ARKIT
     static cv::Mat readDepthRaw(const std::string& path, int width, int height) {
@@ -192,13 +186,19 @@ namespace MVS::ARKIT {
         score.avgAngle += fAngle;
     }
     
-    // 
-    void ARKITScene::selectNeighbors(Scene& scene) {
+    // Typical OpenmMVG + OpenMVS pipeline:
+    // 1) OpenMVG generates a sparse point cloud where each point
+    // associated with several images, determined through feature matching and bundle adjustment
+    // 2) OpenMVS then uses these local releatinships to do the global selection that computing best neighboring views for each image.
+    // ARKIT pipeline:
+    // 1) ARKIT outputs depthmaps, skiping feature matching and BA
+    // 2) Global selection is performed through visibility test using ARKIT depthmap
+    void ARKITScene::selectViews() {
         std::vector<Camera> cameras;
         std::vector<cv::Mat> depthMaps;
 
         for(int i=0; i< arkitFrames.size(); i++) {
-            const Camera & camera = loadCamera(scene, i, depthMapSize);
+            const Camera & camera = loadCamera(i, depthMapSize);
             const cv::Mat& depthmap = getDepthMap(i);
 
             cameras.push_back(camera);
@@ -206,7 +206,7 @@ namespace MVS::ARKIT {
         }
 
         for(int i=0; i< arkitFrames.size(); i++) {
-            Image& imageData = scene.images[i];
+            Image& imageData = scene->images[i];
             selectViews(imageData, cameras, depthMaps);
         }
     }
@@ -229,7 +229,7 @@ namespace MVS::ARKIT {
         
         std::vector<int> neighbors;
         for(int i = 0; i < arkitFrames.size(); i++) {
-            if(i == imageData.ID || !arkitFrames[i].valid) {
+            if(i == imageData.ID) {
                 continue;
             }
             const Camera& targetCamera = cameras[i];
@@ -301,15 +301,26 @@ namespace MVS::ARKIT {
 		});
     }
 
-    Camera ARKITScene::loadCamera(const Scene& scene, int index, const cv::Size newSize, bool transToRef) {
+    // The bridge between OpenMVS pipeline and ARKIT used to replace the global selection 
+    void ARKITScene::selecViews(DepthData& depthData) {
+        const Image* pImageData = depthData.GetView().pImageData;
+
+        if(pImageData == nullptr) {
+            throw std::runtime_error("pImageData is nullptr!");
+        }
+
+        depthData.neighbors.CopyOf(scene->images[pImageData->cameraID].neighbors);
+    }
+
+    Camera ARKITScene::loadCamera(int index, const cv::Size newSize, bool transToRef) {
 
         if(newSize.empty() || newSize.width <=1 || newSize.height <=1 || std::abs(newSize.aspectRatio() - depthMapSize.aspectRatio())> 1e-6) {
             throw std::runtime_error(String::FormatString("Invalid newSize: (%f, %f)",newSize.width, newSize.height));
         }
 
         // referenct camera
-        const Camera& cameraRef = scene.images[0].camera;
-        const Image& image = scene.images[index];
+        const Camera& cameraRef = scene->images[0].camera;
+        const Image& image = scene->images[index];
 
         // resize resolution to `newSize`
         Camera camera = image.camera.GetScaled(cv::Size(image.width, image.height), newSize);
@@ -325,7 +336,7 @@ namespace MVS::ARKIT {
         return camera;
     }
 
-    void ARKITScene::buildCoarsePointcloud(const Scene& scene, const std::string& ply_path) {
+    void ARKITScene::buildCoarsePointcloud(const std::string& ply_path) {
         PointCloud pointcloud;
         pointcloud.points.reserve(arkitFrames.size() * depthMapSize.area());
 
@@ -334,10 +345,10 @@ namespace MVS::ARKIT {
             
             cv::Mat deptmap = getDepthMap(i);
 
-            const Image& image = scene.images[i];
+            const Image& image = scene->images[i];
 
             // load camera for depthmap projection
-            const Camera& camera = loadCamera(scene, i, depthMapSize);
+            const Camera& camera = loadCamera(i, depthMapSize);
             
             cv::Mat scaledImage;
 
@@ -363,18 +374,18 @@ namespace MVS::ARKIT {
         pointcloud.Save(ply_path);
     }
 
-    void ARKITScene::build(Scene& scene) {
+    void ARKITScene::build(const std::string& artkit_dir) {
 
         parseARKITFrames(artkit_dir, arkitFrames);
 
         // only one platform
-        Platform& platform = scene.platforms.emplace_back();
+        Platform& platform = scene->platforms.emplace_back();
         platform.name = "";
         
         // poses
         platform.poses.reserve(arkitFrames.size());
         // init scene images
-        scene.images.reserve(arkitFrames.size());
+        scene->images.reserve(arkitFrames.size());
 
         std::vector<KMatrix> kmatrices;
         kmatrices.reserve(arkitFrames.size());
@@ -393,7 +404,7 @@ namespace MVS::ARKIT {
             buildPose(data, entry, pose);
 
             // build image
-            Image& image = scene.images.emplace_back();
+            Image& image = scene->images.emplace_back();
             buildImage(data, entry, image);
 
             Platform::Camera& camera = platform.cameras.emplace_back(KMatrix(vals.data()), RMatrix::IDENTITY, CMatrix::ZERO);
@@ -401,7 +412,7 @@ namespace MVS::ARKIT {
             camera.K = camera.GetScaledK(REAL(1)/Camera::GetNormalizationScale(image.width, image.height)); 
 
             // assemble projection matrix, build image camera
-            image.UpdateCamera(scene.platforms);
+            image.UpdateCamera(scene->platforms);
         }
 
         // set raw depthmap size
@@ -432,5 +443,61 @@ namespace MVS::ARKIT {
         cv::resize(1.0f / depthmap, resizedInvDepth, newSize, 0, 0, cv::INTER_LINEAR);
 
         return 1.0f / resizedInvDepth;
+    }
+
+    // Serializes only arkit frames
+    void ARKITScene::save(const std::string& meta_json_path) {
+        json arkitScene;
+        arkitScene["frames"] = json::array();
+        
+        for(auto& f : arkitFrames) {
+            arkitScene["frames"].push_back({
+                {"index", f.index},
+                {"base_name", f.base_name},
+                {"image_name", f.image_name},
+                {"meta_name", f.meta_name},
+                {"depthmap_name", f.depthmap_name}
+            });
+        }
+
+        arkitScene["depthmapWidth"] = depthMapSize.width;
+        arkitScene["depthmapHeight"] = depthMapSize.height;
+        
+        std::ofstream file(meta_json_path);
+
+        if(!file) {
+            throw std::runtime_error("Failed to opne file: "+ meta_json_path);
+        }
+
+        file << arkitScene.dump(4);
+
+        std::cout << "Save frames to " << meta_json_path << std::endl;
+    }
+
+    // Load arkit frames
+    void ARKITScene::load(const std::string& meta_json_path) {
+        std::ifstream file(meta_json_path);
+
+        if(!file) {
+            throw std::runtime_error("Failed to opne file: "+ meta_json_path);
+        }
+
+        json j;
+        file >> j;
+        
+        int depthmapWidth = j["depthmapWidth"].get<int>();
+        int depthmapHeight = j["depthmapHeight"].get<int>();
+
+        depthMapSize = cv::Size(depthmapWidth, depthmapHeight);
+
+        for (auto& frame : j["frames"]) {
+            arkitFrames.emplace_back(
+                frame["index"].get<int>(),
+                frame["base_name"].get<std::string>(),
+                frame["image_name"].get<std::string>(),
+                frame["meta_name"].get<std::string>(),
+                frame["depthmap_name"].get<std::string>()
+            );
+        }
     }
 }
