@@ -253,7 +253,8 @@ bool Scene::SaveInterface(const String & fileName, int version) const
 	FOREACH(i, images) {
 		const Image& imageData = images[i];
 		MVS::Interface::Image& image = obj.images[i];
-		image.name = MAKE_PATH_REL(WORKING_FOLDER_FULL, imageData.name);
+		// image.name = MAKE_PATH_REL(WORKING_FOLDER_FULL, imageData.name);
+		image.name = imageData.name;
 		if (!imageData.maskName.empty())
 			image.maskName = MAKE_PATH_REL(WORKING_FOLDER_FULL, imageData.maskName);
 		image.poseID = imageData.poseID;

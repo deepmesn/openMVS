@@ -258,9 +258,10 @@ int main(int argc, LPCTSTR* argv) {
     ARKITScene arkitScene(&scene);
     arkitScene.build("/data/reconstruction/clock/clock/clock");
     // arkitScene.buildCoarsePointcloud(scene, "/data/reconstruction/clock/clock/clock/bbb.ply");
-    arkitScene.selectViews();
+    // arkitScene.selectViews();
 
-    scene.Save("/data/reconstruction/clock/clock/clock/scene.mvs", (ARCHIVE_TYPE)OPT::nArchiveType);
+	arkitScene.save("/data/reconstruction/clock/clock/mvs/arkit.json");
+    scene.Save("/data/reconstruction/clock/clock/mvs/scene.mvs", (ARCHIVE_TYPE)OPT::nArchiveType);
     std::cout << "Entries :" << arkitScene.arkitFrames.size() << std::endl;
     return 0;
 }

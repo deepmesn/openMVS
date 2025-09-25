@@ -294,53 +294,54 @@ int main(int argc, LPCTSTR* argv) {
 	Scene scene(OPT::nMaxThreads);
 
 	// // load and estimate a dense point-cloud
-	// const Scene::SCENE_TYPE sceneType(scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)));
-	// if (sceneType == Scene::SCENE_NA)
-	// 	return EXIT_FAILURE;
+	const Scene::SCENE_TYPE sceneType(scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)));
+	if (sceneType == Scene::SCENE_NA)
+		return EXIT_FAILURE;
 
+	MVS::ARKIT::ARKITScene arkitScene(&scene);
+	arkitScene.load("arkit.json");
 
 	// if (!scene.IsBounded())
 	// 	scene.EstimateROI(OPT::nEstimateROI, 1.1f);
 
-	// PointCloud sparsePointCloud;
-	// if (OPT::nEstimateSegmentation >= 0 && ((ARCHIVE_TYPE)OPT::nArchiveType != ARCHIVE_MVS || sceneType == Scene::SCENE_INTERFACE)) {
-	// 	// estimate depth-maps and densify the point-cloud
-	// 	#if TD_VERBOSE != TD_VERBOSE_OFF
-	// 	if (VERBOSITY_LEVEL > 1 && !scene.pointcloud.IsEmpty())
-	// 		scene.pointcloud.PrintStatistics(scene.images.data(), &scene.obb);
-	// 	#endif
-	// 	if ((ARCHIVE_TYPE)OPT::nArchiveType == ARCHIVE_MVS)
-	// 		sparsePointCloud = scene.pointcloud;
-	// 	TD_TIMER_START();
-	// 	if (!scene.DenseReconstruction(OPT::nFusionMode, OPT::bCrop2ROI, OPT::fBorderROI, OPT::fSampleMeshNeighbors)) {
-	// 		if (ABS(OPT::nFusionMode) != 1)
-	// 			return EXIT_FAILURE;
-	// 		VERBOSE("Depth-maps estimated (%s)", TD_TIMER_GET_FMT().c_str());
-	// 		return EXIT_SUCCESS;
-	// 	}
-	// 	VERBOSE("Densifying point-cloud completed: %u points (%s)", scene.pointcloud.GetSize(), TD_TIMER_GET_FMT().c_str());
-	// }
+	PointCloud sparsePointCloud;
+	if (OPT::nEstimateSegmentation >= 0 && ((ARCHIVE_TYPE)OPT::nArchiveType != ARCHIVE_MVS || sceneType == Scene::SCENE_INTERFACE)) {
+		// estimate depth-maps and densify the point-cloud
+		if ((ARCHIVE_TYPE)OPT::nArchiveType == ARCHIVE_MVS)
+			sparsePointCloud = scene.pointcloud;
+			
+		TD_TIMER_START();
+		if (!scene.DenseReconstruction(OPT::nFusionMode, OPT::bCrop2ROI, OPT::fBorderROI, OPT::fSampleMeshNeighbors)) {
+			if (ABS(OPT::nFusionMode) != 1)
+				return EXIT_FAILURE;
+			VERBOSE("Depth-maps estimated (%s)", TD_TIMER_GET_FMT().c_str());
+			return EXIT_SUCCESS;
+		}
+		VERBOSE("Densifying point-cloud completed: %u points (%s)", scene.pointcloud.GetSize(), TD_TIMER_GET_FMT().c_str());
+	}
 
-	// // save the final point-cloud
-	// const String baseFileName(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName)));
-	// scene.pointcloud.Save(baseFileName+_T(".ply"), (ARCHIVE_TYPE)OPT::nArchiveType == ARCHIVE_MVS);
-	// #if TD_VERBOSE != TD_VERBOSE_OFF
-	// if (VERBOSITY_LEVEL > 2)
-	// 	scene.ExportCamerasMLP(baseFileName+_T(".mlp"), baseFileName+_T(".ply"));
-	// #endif
-	// if ((ARCHIVE_TYPE)OPT::nArchiveType == ARCHIVE_MVS)
-	// 	scene.pointcloud.Swap(sparsePointCloud);
-	// scene.Save(baseFileName+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
-	// #if TD_VERBOSE != TD_VERBOSE_OFF
-	// if ((ARCHIVE_TYPE)OPT::nArchiveType == ARCHIVE_MVS)
-	// 	scene.pointcloud.Swap(sparsePointCloud);
-	// if (VERBOSITY_LEVEL > 2 && !scene.pointcloud.labels.empty()) {
-	// 	// save the point-cloud with colored segmentation,
-	// 	// by overwriting the existing colors with random colors, one for each label
-	// 	ColorPointSegmentation(scene.pointcloud);
-	// 	scene.pointcloud.Save(baseFileName+_T("_labels.ply"));
-	// }
-	// #endif
+	// save the final point-cloud
+	const String baseFileName(MAKE_PATH_SAFE(Util::getFileFullName(OPT::strOutputFileName)));
+	scene.pointcloud.Save(baseFileName+_T(".ply"), (ARCHIVE_TYPE)OPT::nArchiveType == ARCHIVE_MVS);
+	#if TD_VERBOSE != TD_VERBOSE_OFF
+	if (VERBOSITY_LEVEL > 2)
+		scene.ExportCamerasMLP(baseFileName+_T(".mlp"), baseFileName+_T(".ply"));
+	#endif
+
+	if ((ARCHIVE_TYPE)OPT::nArchiveType == ARCHIVE_MVS)
+		scene.pointcloud.Swap(sparsePointCloud);
+	scene.Save(baseFileName+_T(".mvs"), (ARCHIVE_TYPE)OPT::nArchiveType);
+
+	#if TD_VERBOSE != TD_VERBOSE_OFF
+	if ((ARCHIVE_TYPE)OPT::nArchiveType == ARCHIVE_MVS)
+		scene.pointcloud.Swap(sparsePointCloud);
+	if (VERBOSITY_LEVEL > 2 && !scene.pointcloud.labels.empty()) {
+		// save the point-cloud with colored segmentation,
+		// by overwriting the existing colors with random colors, one for each label
+		ColorPointSegmentation(scene.pointcloud);
+		scene.pointcloud.Save(baseFileName+_T("_labels.ply"));
+	}
+	#endif
 	return EXIT_SUCCESS;
 }
 /*----------------------------------------------------------------*/

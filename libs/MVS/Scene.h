@@ -35,9 +35,9 @@
 
 // I N C L U D E S /////////////////////////////////////////////////
 
+#include <functional>
 #include "SceneDensify.h"
 #include "Mesh.h"
-
 
 // D E F I N E S ///////////////////////////////////////////////////
 
@@ -63,6 +63,8 @@ public:
 
 	unsigned nMaxThreads; // maximum number of threads used to distribute the work load
 
+	std::function<bool(uint32_t, DepthData&)> selecViewsCallback;
+	std::function<void(uint32_t, DepthData&)> initDepthMapCallback;
 public:
 	inline Scene(unsigned _nMaxThreads=0)
 		: obb(true), transform(Matrix4x4::IDENTITY), nMaxThreads(Thread::getMaxThreads(_nMaxThreads)) {}

@@ -13,7 +13,7 @@ cxx_executable_with_flags(
 		DensifyPointCloudARKIT 
 		"Apps" "${cxx_default}" 
 		"MVS" 
-		DensifyPointCloudARKIT.cpp 
+		DensifyPointCloudARKIT.cpp scene_from_arkit.cpp
 		${LIBRARY_FILES_H}
 )
 
