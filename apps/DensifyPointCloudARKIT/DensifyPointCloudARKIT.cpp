@@ -293,6 +293,8 @@ int main(int argc, LPCTSTR* argv) {
 
 	Scene scene(OPT::nMaxThreads);
 
+	VERBOSE("DensifyPointCloudARKIT: desiredDeviceID: %d, nResolutionLevel: %d, nMaxResolution: %d, nMinResolution, %d", SEACAVE::CUDA::desiredDeviceID, OPTDENSE::nResolutionLevel, OPTDENSE::nMaxResolution, OPTDENSE::nMinResolution);
+
 	// // load and estimate a dense point-cloud
 	const Scene::SCENE_TYPE sceneType(scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)));
 	if (sceneType == Scene::SCENE_NA)

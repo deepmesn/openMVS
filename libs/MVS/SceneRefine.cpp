@@ -486,6 +486,9 @@ void MeshRefine::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned nClos
 	const bool bNoSimplification(maxArea == 0);
 	if (!bNoDecimation) {
 		if (fDecimate > 0.f) {
+			
+			VERBOSE("SubdivideMesh: fDecimate: %f, nCloseHoles: %d", fDecimate, nCloseHoles);
+
 			// decimate to the desired resolution
 			scene.mesh.Clean(fDecimate, 0.f, false, nCloseHoles, 0u, 0.f, false);
 			scene.mesh.Clean(1.f, 0.f, false, nCloseHoles, 0u, 0.f, true);
@@ -510,12 +513,19 @@ void MeshRefine::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned nClos
 
 			const float fMaxArea((float)(maxArea > 0 ? maxArea : 64));
 			const float fMedianArea(6.f*(float)Mesh::AreaArr(maxAreas).GetMedian());
+			
+			VERBOSE("SubdivideMesh: [BEFORE CLEAN]fDecimate: %f, vertexs: %d, nCloseHoles: %d, maxArea: %f, medianArea: %f, deciateRate: %f", 
+				fDecimate, scene.mesh.vertices.GetSize(), nCloseHoles, fMaxArea, fMedianArea, (fMedianArea < fMaxArea ? MAXF(0.1f, fMedianArea/fMaxArea) : 1.0));
+
 			if (fMedianArea < fMaxArea) {
 				maxAreas.Empty();
 
 				// decimate to the auto detected resolution
+				// scene.mesh.Clean(0.5, 0.f, false, nCloseHoles, 0u, 0.f, false);
 				scene.mesh.Clean(MAXF(0.1f, fMedianArea/fMaxArea), 0.f, false, nCloseHoles, 0u, 0.f, false);
 				scene.mesh.Clean(1.f, 0.f, false, nCloseHoles, 0u, 0.f, true);
+				
+				VERBOSE("SubdivideMesh: [AFTER CLEAN] vertexs: %d", scene.mesh.vertices.GetSize());
 
 				#ifdef MESHOPT_ENSUREEDGESIZE
 				// make sure there are no edges too small or too long
@@ -560,7 +570,7 @@ void MeshRefine::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned nClos
 	// re-map vertex and camera faces
 	ListVertexFacesPre();
 
-	DEBUG_EXTRA("Mesh subdivided: %u/%u -> %u/%u vertices/faces", numVertsOld, numFacesOld, vertices.GetSize(), faces.GetSize());
+	VERBOSE("Mesh subdivided: %u/%u -> %u/%u vertices/faces", numVertsOld, numFacesOld, vertices.GetSize(), faces.GetSize());
 
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	if (VERBOSITY_LEVEL > 3)
@@ -1295,7 +1305,7 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 		// init images
 		const Real scale(POWI(fScaleStep, nScales-nScale-1));
 		const Real step(POWI(2.f, nScales-nScale));
-		DEBUG_ULTIMATE("Refine mesh at: %.2f image scale", scale);
+		VERBOSE("Refine mesh at: %.2f image scale", scale);
 		if (!refine.InitImages(scale, Real(0.12)*step+Real(0.2)))
 			return false;
 

@@ -269,6 +269,8 @@ int main(int argc, LPCTSTR* argv)
 	if (!application.Initialize(argc, argv))
 		return EXIT_FAILURE;
 
+	VERBOSE("TexureMesh: desiredDeviceID: %d, nResolutionLevel: %d, nMaxResolution: %d, nMinResolution, %d", SEACAVE::CUDA::desiredDeviceID, OPT::nResolutionLevel, OPTDENSE::nMaxResolution, OPTDENSE::nMinResolution);
+
 	Scene scene(OPT::nMaxThreads);
 	// load and texture the mesh
 	const Scene::SCENE_TYPE sceneType(scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)));

@@ -453,7 +453,7 @@ void* STCALL DepthMapsData::EndDepthMapTmp(void* arg)
 	return NULL;
 }
 
-DepthData DepthMapsData::ScaleDepthData(const DepthData& inputDeptData, float scale) {
+DepthData DepthMapsData::ScaleDepthData(const DepthData& inputDeptData, float scale, ResizeDepthMapCallback _resizeDepthMap) {
 	ASSERT(scale <= 1);
 	if (scale == 1)
 		return inputDeptData;
@@ -471,8 +471,15 @@ DepthData DepthMapsData::ScaleDepthData(const DepthData& inputDeptData, float sc
 		}
 		viewData.Init(rescaledDepthData.images[0].camera);
 	}
+
+	// TODO:
 	if (!rescaledDepthData.depthMap.empty())
-		cv::resize(rescaledDepthData.depthMap, rescaledDepthData.depthMap, cv::Size(), scale, scale, cv::INTER_NEAREST);
+		if(_resizeDepthMap != nullptr) {
+			const cv::Size newSize(cvRound(scale*rescaledDepthData.depthMap.cols), cvRound(scale * rescaledDepthData.depthMap.rows));
+			cv::resize(rescaledDepthData.depthMap, rescaledDepthData.depthMap, newSize);
+		} else {
+			cv::resize(rescaledDepthData.depthMap, rescaledDepthData.depthMap, cv::Size(), scale, scale, cv::INTER_NEAREST);
+		}
 	if (!rescaledDepthData.normalMap.empty())
 		cv::resize(rescaledDepthData.normalMap, rescaledDepthData.normalMap, cv::Size(), scale, scale, cv::INTER_NEAREST);
 	return rescaledDepthData;
@@ -499,7 +506,7 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 		return true;
 	}
 	#endif // _USE_CUDA
-
+#if 0
 	TD_TIMER_STARTD();
 
 	const unsigned nMaxThreads(scene.nMaxThreads);
@@ -679,7 +686,8 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 			String::FormatString("estimated using %2u images", depthData.images.size()-1).c_str() :
 			String::FormatString("with image %3u estimated", depthData.images[1].GetID()).c_str(),
 		depthData.depthMap.cols, depthData.depthMap.rows, TD_TIMER_GET_FMT().c_str());
-	return true;
+#endif
+		return true;
 } // EstimateDepthMap
 /*----------------------------------------------------------------*/
 
@@ -2118,6 +2126,8 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 		return false;
 	data.progress.Release();
 
+	VERBOSE("Estimate Geometric filter.....");
+
 	if (data.nFusionMode >= 0) {
 		#ifdef _USE_CUDA
 		// initialize CUDA
@@ -2127,6 +2137,8 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 		}
 		#endif // _USE_CUDA
 		while (++data.nEstimationGeometricIter < (int)OPTDENSE::nEstimationGeometricIters) {
+			VERBOSE("[START] estimate Geometric filter, iterator: %d.....", data.nEstimationGeometricIter);
+
 			// initialize the queue of images to be geometric processed
 			if (data.nEstimationGeometricIter+1 == (int)OPTDENSE::nEstimationGeometricIters)
 				OPTDENSE::nOptimize = nOptimize;
@@ -2147,6 +2159,9 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 				// single-thread execution
 				DenseReconstructionEstimate((void*)&data);
 			}
+
+			VERBOSE("[END] estimate Geometric filter, iterator: %d.....", data.nEstimationGeometricIter);
+			
 			GET_LOGCONSOLE().Play();
 			if (!data.events.IsEmpty())
 				return false;
@@ -2163,6 +2178,8 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 		}
 		data.nEstimationGeometricIter = -1;
 	}
+
+	VERBOSE("Adjust confidence.....");
 
 	if ((OPTDENSE::nOptimize & (OPTDENSE::ADJUST_CONFIDENCE | OPTDENSE::ADJUST_CONFIDENCE_FAST)) != 0) {
 		// initialize the queue of depth-maps to be filtered

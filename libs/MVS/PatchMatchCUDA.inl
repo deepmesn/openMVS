@@ -82,7 +82,7 @@ private:
 	void ReleaseCUDA();
 	void AllocatePatchMatchCUDA(const cv::Mat1f& image);
 	void AllocateImageCUDA(size_t i, const cv::Mat1f& image, bool bInitImage, bool bInitDepthMap);
-	void RunCUDA(float* ptrCostMap=NULL, uint32_t* ptrViewsMap=NULL);
+	void RunCUDA(float* ptrCostMap=NULL, uint32_t* ptrViewsMap=NULL, int* invalid_counters = NULL);
 
 public:
 	Params params;

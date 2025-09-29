@@ -227,29 +227,47 @@ int main(int argc, LPCTSTR* argv)
 		VERBOSE("error: empty initial mesh");
 		return EXIT_FAILURE;
 	}
+	
+	VERBOSE("RefineMesh: desiredDeviceID: %d, nResolutionLevel: %d, nMaxResolution: %d, nMinResolution, %d", SEACAVE::CUDA::desiredDeviceID, OPT::nResolutionLevel, OPTDENSE::nMaxResolution, OPTDENSE::nMinResolution);
+
+	auto runCUDA = [&]() {
+		VERBOSE("runCUDA: ...");
+		return scene.RefineMeshCUDA(OPT::nResolutionLevel, OPT::nMinResolution, OPT::nMaxViews,
+									OPT::fDecimateMesh, OPT::nCloseHoles, OPT::nEnsureEdgeSize,
+									OPT::nMaxFaceArea,
+									OPT::nScales, OPT::fScaleStep,
+									OPT::nAlternatePair>10 ? OPT::nAlternatePair%10 : 0,
+									OPT::fRegularityWeight,
+									OPT::fRatioRigidityElasticity,
+									OPT::fGradientStep);
+	};
+
+	auto runCPU = [&]() {
+		VERBOSE("runCPU: ....");
+		return scene.RefineMesh(OPT::nResolutionLevel, OPT::nMinResolution, OPT::nMaxViews,
+							OPT::fDecimateMesh, OPT::nCloseHoles, OPT::nEnsureEdgeSize,
+							OPT::nMaxFaceArea,
+							OPT::nScales, OPT::fScaleStep,
+							OPT::nAlternatePair,
+							OPT::fRegularityWeight,
+							OPT::fRatioRigidityElasticity,
+							OPT::fGradientStep,
+							OPT::fPlanarVertexRatio,
+							OPT::nReduceMemory);
+	};
+
 	TD_TIMER_START();
+	
 	#ifdef _USE_CUDA
-	if (SEACAVE::CUDA::desiredDeviceID < -1 ||
-		!scene.RefineMeshCUDA(OPT::nResolutionLevel, OPT::nMinResolution, OPT::nMaxViews,
-							  OPT::fDecimateMesh, OPT::nCloseHoles, OPT::nEnsureEdgeSize,
-							  OPT::nMaxFaceArea,
-							  OPT::nScales, OPT::fScaleStep,
-							  OPT::nAlternatePair>10 ? OPT::nAlternatePair%10 : 0,
-							  OPT::fRegularityWeight,
-							  OPT::fRatioRigidityElasticity,
-							  OPT::fGradientStep))
-	#endif
-	if (!scene.RefineMesh(OPT::nResolutionLevel, OPT::nMinResolution, OPT::nMaxViews,
-						  OPT::fDecimateMesh, OPT::nCloseHoles, OPT::nEnsureEdgeSize,
-						  OPT::nMaxFaceArea,
-						  OPT::nScales, OPT::fScaleStep,
-						  OPT::nAlternatePair,
-						  OPT::fRegularityWeight,
-						  OPT::fRatioRigidityElasticity,
-						  OPT::fGradientStep,
-						  OPT::fPlanarVertexRatio,
-						  OPT::nReduceMemory))
+	if ((SEACAVE::CUDA::desiredDeviceID <-1 || !runCUDA()) && !runCPU()) {
 		return EXIT_FAILURE;
+	} 
+	#else
+	if (!runCPU()) {
+		return EXIT_FAILURE;
+	}
+	#endif
+
 	VERBOSE("Mesh refinement completed: %u vertices, %u faces (%s)", scene.mesh.vertices.GetSize(), scene.mesh.faces.GetSize(), TD_TIMER_GET_FMT().c_str());
 
 	// save the final mesh

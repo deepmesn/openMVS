@@ -46,6 +46,30 @@ namespace MVS {
 
 namespace CUDA {
 
+static void debug_depthmap(const DepthData& depthData, int& invalidDepth, int& invalidNormals) {
+	for(int i = 0; i < depthData.depthMap.rows; i++) {
+		for(int j = 0; j < depthData.depthMap.cols; j++) {
+			if(depthData.depthMap(i,j) < 1e-6) {
+				invalidDepth++;
+			}
+
+			if(cv::norm(depthData.normalMap(i,j)) <1e-6) {
+				invalidNormals++;
+			}                
+		}
+	}
+}
+
+static void resizeDepthMap(DepthMap& src, DepthMap& target, const cv::Size& newSize) {
+	src.setTo(1e-7, src <= 0);
+
+	// resize
+	cv::Mat resizedInvDepth;
+	cv::resize(1.0f / src, resizedInvDepth, newSize, 0, 0, cv::INTER_LINEAR);
+
+	target =  1.0f / resizedInvDepth;
+}
+
 PatchMatch::PatchMatch(int device)
 {
 	// initialize CUDA device if needed
@@ -206,14 +230,21 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData)
 	for (unsigned scaleNumber = totalScaleNumber+1; scaleNumber-- > 0; ) {
 		// initialize
 		const float scale = 1.f / POWI(2, scaleNumber);
-		DepthData currentDepthData(DepthMapsData::ScaleDepthData(fullResDepthData, scale));
+		DepthData currentDepthData(DepthMapsData::ScaleDepthData(fullResDepthData, scale, resizeDepthMap));
+		// DepthData currentDepthData(DepthMapsData::ScaleDepthData(fullResDepthData, scale));
+
 		DepthData& depthData(scaleNumber==0 ? fullResDepthData : currentDepthData);
 		const Image8U::Size size(depthData.images.front().image.size());
 		params.bLowResProcessed = false;
+
+		// TODO: 
 		if (scaleNumber != totalScaleNumber) {
 			// all resolutions, but the smallest one, if multi-resolution is enabled
 			params.bLowResProcessed = true;
-			cv::resize(lowResDepthMap, depthData.depthMap, size, 0, 0, cv::INTER_LINEAR);
+			// cv::resize(lowResDepthMap, depthData.depthMap, size, 0, 0, cv::INTER_LINEAR);
+			resizeDepthMap(lowResDepthMap, depthData.depthMap, size);
+
+			// TODO:
 			cv::resize(lowResNormalMap, depthData.normalMap, size, 0, 0, cv::INTER_NEAREST);
 			cv::resize(lowResViewsMap, depthData.viewsMap, size, 0, 0, cv::INTER_NEAREST);
 			CUDA_CHECK(cudaMalloc((void**)&cudaLowDepths, sizeof(float) * size.area()));
@@ -352,9 +383,32 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData)
 			CUDA_CHECK(cudaMemcpy(cudaLowDepths, depthData.depthMap.ptr<float>(), sizeof(float) * depthData.depthMap.size().area(), cudaMemcpyHostToDevice));
 		}
 
+		int _invalidDepths =0;
+		int _invalidNormas = 0;
+
+		debug_depthmap(depthData, _invalidDepths, _invalidNormas);
+		VERBOSE("[BEFORE RUN] Image: %d, Scale: %d, resolution: (%d,%d), fThresholdKeepCost:%f, invalid depths: %d, invalid normals: %d",
+		depthData.GetView().GetID(), scaleNumber, depthData.depthMap.rows, depthData.depthMap.cols,
+		params.fThresholdKeepCost, _invalidDepths, _invalidNormas);
+		
+		const static int N = 4;
+
+		int * d_invalid_counters;
+		cudaMalloc(&d_invalid_counters, N * sizeof(int));
+		cudaMemset(d_invalid_counters, 0, N* sizeof(int));
+
 		// run CUDA patch-match
 		ASSERT(!depthData.viewsMap.empty());
-		RunCUDA(depthData.confMap.getData(), (uint32_t*)depthData.viewsMap.getData());
+		RunCUDA(depthData.confMap.getData(), (uint32_t*)depthData.viewsMap.getData(), d_invalid_counters);
+
+		int h_invalid_counters[N];
+		cudaMemcpy(h_invalid_counters, d_invalid_counters, N * sizeof(int), cudaMemcpyDeviceToHost);
+		cudaFree(d_invalid_counters);
+
+		VERBOSE("[RUN] Image: %d, Scale: %d, resolution: (%d,%d), fThresholdKeepCost:%f, invalid depths: %d, invalid normals: %d, filter dpeth : %d, filter threshold: %d", 
+				depthData.GetView().GetID(), scaleNumber, depthData.depthMap.rows, depthData.depthMap.cols,
+				params.fThresholdKeepCost, h_invalid_counters[0], h_invalid_counters[1], h_invalid_counters[2], h_invalid_counters[3]);
+
 		CUDA_CHECK(cudaGetLastError());
 		if (params.bLowResProcessed)
 			CUDA_CHECK(cudaFree(cudaLowDepths));
@@ -394,6 +448,14 @@ void PatchMatch::EstimateDepthMap(DepthData& depthData)
 			}
 		}
 		
+		_invalidDepths =0;
+		_invalidNormas = 0;
+
+		debug_depthmap(depthData, _invalidDepths, _invalidNormas);
+		VERBOSE("[AFTER RUN] Image: %d, Scale: %d, resolution: (%d,%d), fThresholdKeepCost:%f, invalid depths: %d, invalid normals: %d",
+		depthData.GetView().GetID(), scaleNumber, depthData.depthMap.rows, depthData.depthMap.cols,
+		params.fThresholdKeepCost, _invalidDepths, _invalidNormas);
+
 		// remember sub-resolution estimates for next iteration
 		if (scaleNumber > 0) {
 			lowResDepthMap = depthData.depthMap;

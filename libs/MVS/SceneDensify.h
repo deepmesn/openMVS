@@ -50,6 +50,8 @@ class PatchMatch;
 } // namespace CUDA
 #endif // _USE_CUDA
 
+using ResizeDepthMapCallback = std::function<void(DepthMap&, DepthMap&, const cv::Size&)>;
+
 // structure used to compute all depth-maps
 class MVS_API DepthMapsData
 {
@@ -73,7 +75,7 @@ public:
 	void FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal);
 	void DenseFuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal);
 
-	static DepthData ScaleDepthData(const DepthData& inputDeptData, float scale);
+	static DepthData ScaleDepthData(const DepthData& inputDeptData, float scale, ResizeDepthMapCallback _resizeDepthMap = nullptr);
 
 protected:
 	static void* STCALL ScoreDepthMapTmp(void*);

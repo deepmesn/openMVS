@@ -13,7 +13,8 @@ namespace MVS::ARKIT {
     // Refer: https://arxiv.org/pdf/2304.12031.pdf
     // Codes: libs/MVS/PatchMatchCUDA.cu#ComputeDepthGradient
     static cv::Vec4f computeDepthNormal(const KMatrix& K, const cv::Mat& depthMap, const Point2i& pos) {
-        
+        ASSERT(pos.x< depthMap.cols && pos.y <depthMap.rows);
+
         const cv::Vec4f ZERO = {0, 0, 0, 0};
 
         if(pos.x <=0 || pos.x >=depthMap.cols -1 || pos.y <=0 || pos.y >= depthMap.rows -1) {
@@ -363,22 +364,46 @@ namespace MVS::ARKIT {
         // Scale the ARKIT depth map to target size
         const cv::Mat& depthMap = getDepthMap(imageID, depthData.size);
 
+        int invalidDepthmapPixels = 0;
+
+        for(int row = 0; row < depthMap.rows; row++) {
+            for(int col = 0; col < depthMap.cols; col++) {
+                float depth = depthMap.at<float>(row,col);
+                if(depth<1e-6) {
+                    invalidDepthmapPixels++;
+                }
+            }
+        }
+
         float min_depth = std::numeric_limits<float>::max();
         float max_depth = 0.f;
 
-        for(int i = 0; i < depthData.depthMap.cols; i++) {
-            for(int j = 0; j < depthData.depthMap.rows; j++) {
-                cv::Vec4f v = computeDepthNormal(camera.K, depthMap, {i,j});
-                depthData.normalMap({i,j}) = Normal(v[0], v[1], v[2]);
-                depthData.depthMap({i,j}) = v[3];
+        int invalidDepth =0;
+        int invalidNormals =0;
+        for(int i = 0; i < depthData.depthMap.rows; i++) {
+            for(int j = 0; j < depthData.depthMap.cols; j++) {
+                cv::Vec4f v = computeDepthNormal(camera.K, depthMap, {j,i});
+                Normal normal(v[0], v[1], v[2]);
+                depthData.normalMap(i,j) = normal;
+                depthData.depthMap(i,j) = v[3];
 
                 min_depth = std::min(min_depth, v[3]==0.f ? min_depth: v[3]);
                 max_depth = std::max(max_depth, v[3]);
+
+                if(v[3] < 1e-6) {
+                    invalidDepth++;
+                }
+
+                if(cv::norm(normal) <1e-6) {
+                    invalidNormals++;
+                }                
             }
         }
 
         depthData.dMin = 0.9 * min_depth;
         depthData.dMax = 1.1 * max_depth;
+        VERBOSE("Base DepthMap: Image ID:%d, (%d/%d), invalid depths:%d, invalid normals: %d", 
+            imageID, invalidDepthmapPixels,depthMap.total(), invalidDepth, invalidNormals);
     } 
 
     Camera ARKITScene::loadCamera(int index, const cv::Size newSize, bool transToRef) {
@@ -514,7 +539,7 @@ namespace MVS::ARKIT {
             return depthmap;
         }
 
-        if (newSize.area() < depthMapSize.area() || std::abs(newSize.aspectRatio() - depthMapSize.aspectRatio()) > 1e-6) {
+        if (std::abs(newSize.aspectRatio() - depthMapSize.aspectRatio()) > 1e-6) {
             throw std::runtime_error("Invalid depthmap size");
         }
 

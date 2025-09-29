@@ -344,6 +344,8 @@ int main(int argc, LPCTSTR* argv)
 	if (!application.Initialize(argc, argv))
 		return EXIT_FAILURE;
 
+	VERBOSE("ReconstructMesh: desiredDeviceID: %d, nResolutionLevel: %d, nMaxResolution: %d, nMinResolution, %d", SEACAVE::CUDA::desiredDeviceID, OPTDENSE::nResolutionLevel, OPTDENSE::nMaxResolution, OPTDENSE::nMinResolution);
+
 	Scene scene(OPT::nMaxThreads);
 	// load project
 	const Scene::SCENE_TYPE sceneType(scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName),
