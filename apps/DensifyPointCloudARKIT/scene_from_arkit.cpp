@@ -173,8 +173,8 @@ namespace MVS::ARKIT {
         image.platformID = 0;
         image.cameraID = frame.index;            
         image.name = frame.image_name;
-        image.width = 1920;//data["exif"]["PixelXDimension"];
-        image.height = 1440;//data["exif"]["PixelYDimension"];
+        image.width = data["image_width"];
+        image.height = data["image_height"];
         image.scale = 1;
 
         image.ReloadImage();
