@@ -25,6 +25,14 @@ cxx_executable_with_flags(
 		${LIBRARY_FILES_H}
 )
 
+# cxx_executable_with_flags(
+# 		vggt_tool 
+# 		"Apps" "${cxx_default}" 
+# 		"MVS" 
+# 		vggt_test.cpp
+# 		${LIBRARY_FILES_H}
+# )
+
 # Install
 INSTALL(TARGETS DensifyPointCloudARKIT
 	EXPORT OpenMVSTargets

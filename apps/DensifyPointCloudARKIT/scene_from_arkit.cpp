@@ -1,6 +1,5 @@
 #include <filesystem>
 #include <unordered_map>
-#include "../../libs/IO/json.hpp"
 // #include "../../libs/Common/Util.inl"
 #include "scene_from_arkit.h"
 
@@ -83,55 +82,60 @@ namespace MVS::ARKIT {
         return 1.0f / resizedInverseDepth;
     }
 
-    static void parseARKITFrames(const std::string& artkit_dir, std::vector<ARKITFrame>& frames) {
-        
-        if (!fs::exists(artkit_dir) || !fs::is_directory(artkit_dir)) {
-            throw std::runtime_error("artkit dir: "+ artkit_dir +" is not exists!");
+    static cv::Size computeInitDepthMapSize(const ARKITFrame& frame) {
+
+        IMAGEPTR pImage = Image::ReadImageHeader(frame.image_name);
+
+        // load image header
+        if(!pImage) {
+            throw std::runtime_error("Failed to open image: " + frame.image_name);
         }
 
-        frames.clear();
+        cv::Size scaledSize(frame.width, frame.height);
 
-        for(const auto& entry: fs::directory_iterator(artkit_dir)) {
-            const auto& path = entry.path();
-            
-            std::string filename = path.filename().string();
-            
-            if(filename.ends_with(META_SUFFIX)) {
-                const std::string& basename = filename.substr(0,filename.length() - META_SUFFIX.length());
-                const fs::path& depth_filename = fs::path(artkit_dir)/(basename + DEPTHMAP_SUFFIX);
-                const fs::path& image_filename = fs::path(artkit_dir)/(basename + ".JPG");
-
-                if(!fs::exists(depth_filename)) {
-                    throw std::runtime_error("Not found depth file: "+ depth_filename.string());
-                }
-
-                if(!fs::exists(image_filename)) {
-                    throw std::runtime_error("Not found image file: "+ image_filename.string());
-                }
-
-                frames.emplace_back(0, basename, image_filename, fs::absolute(path), depth_filename);
-            } 
+        // uniform-resize(ARKIT), 
+        // - the aspect raido of depth map matches precisely that of image, 
+        // - we resize uniformly the image using OpenMVS to match depth map's size.
+        // 
+        // non-uniform resize(VGGT),
+        // - the depth map size is aligned with multiples of 14
+        // - re-compute the aspect ratio
+        if(aspectRatioDiff(cv::Size(pImage->GetWidth(), pImage->GetHeight()), scaledSize)) {
+            if(frame.fixed_width) {
+                scaledSize.height = ROUND2INT(pImage->GetHeight() * frame.width * 1.0 / pImage->GetWidth());
+            } else {
+                scaledSize.width = ROUND2INT(pImage->GetWidth() * frame.height * 1.0 / pImage->GetHeight());
+            }
         }
 
-        // sort images by name acent
-        std::sort(frames.begin(), frames.end(), [](auto& frame1, auto& frame2){
-            return frame1.base_name < frame2.base_name;
-        });
+        // mark the correct initial size
+        return scaledSize;
+    }
 
-        for(int i=0; i< frames.size(); i++) {
-            frames[i].index = i;
+    static void buildImage(const ARKITFrame& frame, Image& image, const cv::Size& depthMapSize) {
+        image.ID = frame.index;
+        image.poseID = frame.index;
+        image.platformID = 0;
+        image.cameraID = frame.index;            
+        image.name = frame.image_name;
+
+        unsigned resolution = std::max(depthMapSize.width, depthMapSize.height);
+
+        // reload image pixels with corrent size
+        if(!image.ReloadImage(resolution)) {
+            throw std::runtime_error("Failed to open image: " + frame.image_name);
         }
     }
 
     template <int m, int n>
     static void parseMatrix(const std::string& s, std::vector<double>& vals) {
 
-        if(s.empty() || s.front()!='[' || s.back() !=']') {
+        if(s.empty()) {
             throw std::runtime_error("Invalidate matrix string: " + s);
         }
 
         // remove brackets
-        std::stringstream ss(s.substr(1, s.length()-2));
+        std::stringstream ss(s);
 
         double v;
         char ch;
@@ -146,6 +150,40 @@ namespace MVS::ARKIT {
         }
     } 
 
+    static void buildIntrinsic(const ARKITFrame& frame, KMatrix& kmatrix, const cv::Size& depthMapSize, bool convertIntrinsicSystem) {
+        std::ifstream file(frame.intrinic_name);
+
+        if(!file.is_open()) {
+            throw std::runtime_error("Failed to open file: " + frame.intrinic_name);
+        }
+
+        std::string line;
+
+        if(!std::getline(file, line)) {
+            throw std::runtime_error("Invalidate file: " + frame.intrinic_name);
+        }
+
+        std::vector<double> vals;
+        parseMatrix<3,3>(line, vals);
+
+        file.close();
+
+        KMatrix scale = KMatrix::eye();
+
+        // non-uniform resizing intrinsic
+        if(depthMapSize != cv::Size(frame.width, frame.height)) {
+            scale(0,0) = depthMapSize.width * 1.0/frame.width;
+            scale(1,1) = depthMapSize.height * 1.0 / frame.height;
+        }
+
+        kmatrix = scale * KMatrix(vals.data());
+
+        if(convertIntrinsicSystem) {
+            kmatrix(0,2) -= 0.5;
+            kmatrix(1,2) -= 0.5;
+        }
+    }
+
     // ARKIT use a right-handed coordinate sysetm with the x-axis pointing to right, 
     // y-axis pointing to up and z-axis pointing to inward(toward to viewer).
     // 
@@ -154,30 +192,27 @@ namespace MVS::ARKIT {
     // 
     // Therefore, when coverting the extrinic matrix from ARKIT to OpenMVS, it is necessary to flip
     // the y-axis, z-axis and translation vector to align coordinate systems. 
-    static void buildPose(const json& data, const ARKITFrame& entry, Platform::Pose& pose) {
+    static void buildPose(const ARKITFrame& frame, Platform::Pose& pose, World2CameraTransformer callback = nullptr) {
+        std::ifstream file(frame.extrinsic_name);
+
+        std::string line;
+
+        if(!file.is_open() || !std::getline(file, line)) {
+            throw std::runtime_error("Failed to open file: " + frame.extrinsic_name);
+        }
+
         std::vector<REAL> vals;
-        parseMatrix<4,4>(data["transform"], vals);
+        parseMatrix<4,4>(line, vals);
+
+        Matrix4x4 extrinsic(vals.data());
 
         // flip y-axis and z-axis
-        const Matrix4x4& world2Camera = Matrix4x4::diag(Matrix4x4::diag_type(1,-1,-1, 1)) * Matrix4x4(vals.data()).inv();
+        const Matrix4x4& world2Camera = callback == nullptr? extrinsic: callback(extrinsic);
         
         pose.R = world2Camera.get_minor<3,3>(0,0);
         
         // set the camera center C = -R^{T}t, t= -RC
         pose.C = -pose.R.t() * world2Camera.get_minor<3,1>(0,3);
-    }
-
-    static void buildImage(const json& data, const ARKITFrame& frame, Image& image) {
-        image.ID = frame.index;
-        image.poseID = frame.index;
-        image.platformID = 0;
-        image.cameraID = frame.index;            
-        image.name = frame.image_name;
-        image.width = data["image_width"];
-        image.height = data["image_height"];
-        image.scale = 1;
-
-        image.ReloadImage();
     }
 
     static void scoreView(const Point3d& refPoint, float depth, const Camera& refCamra, const Camera& targetCamra, const cv::Mat& targetDepthMap, 
@@ -229,6 +264,18 @@ namespace MVS::ARKIT {
         score.avgAngle += fAngle;
     }
     
+    void from_json(const json& j, ARKITFrame& info) {
+        j.at("index").get_to(info.index);
+        j.at("image_name").get_to(info.image_name);
+        j.at("c").get_to(info.c);
+        j.at("width").get_to(info.width);
+        j.at("height").get_to(info.height);
+        j.at("depth_name").get_to(info.depth_name);
+        j.at("intrinic_name").get_to(info.intrinic_name);
+        j.at("extrinsic_name").get_to(info.extrinsic_name);
+        j.at("conf_name").get_to(info.conf_name);
+    }    
+     
     // Typical OpenmMVG + OpenMVS pipeline:
     // 1) OpenMVG generates a sparse point cloud where each point
     // associated with several images, determined through feature matching and bundle adjustment
@@ -240,16 +287,16 @@ namespace MVS::ARKIT {
         std::vector<Camera> cameras;
         std::vector<cv::Mat> depthMaps;
 
-        for(int i=0; i< arkitFrames.size(); i++) {
-            const Camera & camera = loadCamera(i, depthMapSize);
-            const cv::Mat& depthmap = getDepthMap(i);
+        for(const ARKITFrame& frame: arkitFrames) {
+            const Camera & camera = loadCamera(frame);
+            const cv::Mat& depthmap = getDepthMap(frame);
 
             cameras.push_back(camera);
             depthMaps.push_back(depthmap);
         }
 
-        for(int i=0; i< arkitFrames.size(); i++) {
-            Image& imageData = scene->images[i];
+        for(const ARKITFrame& frame: arkitFrames) {
+            Image& imageData = scene->images[frame.index];
             selectViews(imageData, cameras, depthMaps);
         }
     }
@@ -299,7 +346,7 @@ namespace MVS::ARKIT {
 
         // initialize score
         for(int i : neighbors) {
-            scores[i].pixels.reserve(depthMapSize.area());
+            scores[i].pixels.reserve(depthmap.size().area());
         }
 
         for(int row = 0; row < depthmap.rows; row++) {
@@ -346,23 +393,15 @@ namespace MVS::ARKIT {
 		});
     }
 
-    // The bridge between OpenMVS pipeline and ARKIT used to replace the global selection 
-    bool ARKITScene::selecViews(uint32_t imageID, DepthData& depthData) {
-        depthData.neighbors.CopyOf(scene->images[imageID].neighbors);
-        return true;
-    }
-
     // The bridge between the OpenMVS pipeline and ARKit, used for depth initialization.
     // In OpenMVS's default implementation, depth maps and normal maps are initialized using 2D Delaunay triangulation.
     // Currently, we need to initialize depth maps using ARKit and compute normal vectors based on pixel and depth relationships.
-    void ARKITScene::initDepthMap(uint32_t imageID, DepthData& depthData) {
+    void ARKITScene::initDepthMap(const ARKITFrame& frame, DepthData& depthData) {
         depthData.depthMap.create(depthData.size);
         depthData.normalMap.create(depthData.size);
         
-        const Camera& camera = depthData.GetCamera();
-
-        // Scale the ARKIT depth map to target size
-        const cv::Mat& depthMap = getDepthMap(imageID, depthData.size);
+        // load depth map and resize it to corresponding size
+        const cv::Mat& depthMap = getDepthMap(frame, depthData.size);
 
         int invalidDepthmapPixels = 0;
 
@@ -374,6 +413,9 @@ namespace MVS::ARKIT {
                 }
             }
         }
+
+        // the camera has been resized to corrent size in OpenMVS
+        const Camera& camera = depthData.GetCamera();
 
         float min_depth = std::numeric_limits<float>::max();
         float max_depth = 0.f;
@@ -403,21 +445,21 @@ namespace MVS::ARKIT {
         depthData.dMin = 0.9 * min_depth;
         depthData.dMax = 1.1 * max_depth;
         VERBOSE("Base DepthMap: Image ID:%d, (%d/%d), invalid depths:%d, invalid normals: %d", 
-            imageID, invalidDepthmapPixels,depthMap.total(), invalidDepth, invalidNormals);
+            frame.index, invalidDepthmapPixels,depthMap.total(), invalidDepth, invalidNormals);
     } 
 
-    Camera ARKITScene::loadCamera(int index, const cv::Size newSize, bool transToRef) {
+    // return a duplication of camera
+    Camera ARKITScene::loadCamera(const ARKITFrame& frame, const cv::Size& newSize, bool transToRef) {
+        cv::Size initSize = newSize.empty() ? depthMapSize : newSize;
 
-        if(newSize.empty() || newSize.width <=1 || newSize.height <=1 || std::abs(newSize.aspectRatio() - depthMapSize.aspectRatio())> 1e-6) {
-            throw std::runtime_error(String::FormatString("Invalid newSize: (%f, %f)",newSize.width, newSize.height));
-        }
+        ASSERT(!aspectRatioDiff(depthMapSize, initSize));
 
         // referenct camera
         const Camera& cameraRef = scene->images[0].camera;
-        const Image& image = scene->images[index];
+        const Image& image = scene->images[frame.index];
 
         // resize resolution to `newSize`
-        Camera camera = image.camera.GetScaled(cv::Size(image.width, image.height), newSize);
+        Camera camera = image.camera.GetScaled(image.GetSize(), initSize);
 
         if(transToRef) {
             auto R = camera.R * cameraRef.R.t();
@@ -430,26 +472,47 @@ namespace MVS::ARKIT {
         return camera;
     }
 
+    // return a duplication of depth map
+    cv::Mat ARKITScene::getDepthMap(const ARKITFrame& frame, const cv::Size& newSize) {
+        cv::Size initSize = newSize.empty() ? depthMapSize : newSize;
+        
+        ASSERT(!aspectRatioDiff(depthMapSize, initSize));
+
+        cv::Mat depthmap = readDepthRaw(frame.depth_name, frame.width, frame.height);
+
+        if (initSize == depthmap.size()) {
+            return depthmap;
+        }
+
+        // safe depth, set pixel depth to 1e-7 for invalid depths
+        depthmap.setTo(1e-7, depthmap <= 0); 
+
+        // resize
+        cv::Mat resizedInvDepth;
+        cv::resize(1.0f / depthmap, resizedInvDepth, initSize, 0, 0, cv::INTER_LINEAR);
+
+        return 1.0f / resizedInvDepth;
+    }
+
     // Projects depth maps generated by ARKIT into a coarse point cloud,
     // witout any point cloud calibrations are performed.
     // This is only used to verify the correctness of coordinate transform from ARKIT to OpenMVS.    
     void ARKITScene::buildCoarsePointcloud(const std::string& ply_path) {
+        ASSERT(!depthMapSize.empty());
+
         PointCloud pointcloud;
         pointcloud.points.reserve(arkitFrames.size() * depthMapSize.area());
 
-        for(int i = 0; i< arkitFrames.size(); i++) {
-            auto& frame = arkitFrames[i];
-            
-            cv::Mat deptmap = getDepthMap(i);
-
-            const Image& image = scene->images[i];
+        for(const ARKITFrame& frame: arkitFrames) {
+            cv::Mat deptmap = getDepthMap(frame);
 
             // load camera for depthmap projection
-            const Camera& camera = loadCamera(i, depthMapSize);
-            
-            cv::Mat scaledImage;
+            const Camera& camera = loadCamera(frame);
 
-            cv::resize(image.image, scaledImage, depthMapSize, 0, 0, cv::INTER_AREA);
+            const Image& image = scene->images[frame.index];
+
+            ASSERT(depthMapSize == image.GetSize());
+            ASSERT(depthMapSize == deptmap.size());
 
             for(int row = 0; row < deptmap.rows; row++) {
                 for(int col = 0; col < deptmap.cols; col++) {
@@ -462,7 +525,7 @@ namespace MVS::ARKIT {
                     pointcloud.points.emplace_back(P[0], P[1], P[2]);
                     
                     // BGR to RGB
-                    const cv::Vec3b& rgb = scaledImage.at<cv::Vec3b>(row, col);
+                    const cv::Vec3b& rgb = image.image.at<cv::Vec3b>(row, col);
                     pointcloud.colors.emplace_back(rgb[2], rgb[1], rgb[0]);
                 }
             }
@@ -471,9 +534,20 @@ namespace MVS::ARKIT {
         pointcloud.Save(ply_path);
     }
 
-    void ARKITScene::build(const std::string& artkit_dir) {
+    // Assembly data structures of OpenMVS.
+    // We accept depth map outputs from various models as input, such as ARKit and VGGT. The function will
+    // normalize the different inputs into uniform format: intrinsic matrix, image size and camera parameters will be resized to match the size of depth map.
+    // 
+    // The normalized cameras will be serialized into `scene.mvs`, and OpenMVS will reload this normalized camera and resize it according to the actual image size.
+    // 
+    // ARKit: The depth map size is a uniform resize of image size, with the intrinsic matrix is corresponding to original image size.
+    // VGGT: The depth map size is a non-uniform resize of image size, with the intrinsic is corresponding to the resized image.
+    // OpenMVS: Tt only supports uniform resizing of images and intrinsic parameters.
+    // 
+    // So, we must first calculate the intermediate depth map size using `computeInitDepthMapSize` to convert the non-uniform resizing to uniform one.
+    void ARKITScene::build(const std::string& meta_json_path) {
 
-        parseARKITFrames(artkit_dir, arkitFrames);
+        load(meta_json_path);
 
         // only one platform
         Platform& platform = scene->platforms.emplace_back();
@@ -487,105 +561,36 @@ namespace MVS::ARKIT {
         std::vector<KMatrix> kmatrices;
         kmatrices.reserve(arkitFrames.size());
 
-        std::vector<double> vals;
+        for(auto& frame : arkitFrames) {
+            // initialize the image size with depth map size
+            Image& image = scene->images.emplace_back();
+            buildImage(frame, image, depthMapSize);
 
-        for(const auto& entry : arkitFrames) {
-            std::ifstream json_file(entry.meta_name);
-
-            const json data = json::parse(json_file);
+            ASSERT(image.GetSize() == depthMapSize);
             
-            vals.clear();
-            parseMatrix<3,3>(data["intrinsic"], vals);
+            // initialize the intrinsic matrix with depth map size
+            KMatrix kmatrix;
+            buildIntrinsic(frame, kmatrix, depthMapSize, toTopLeftCenter);
 
             Platform::Pose& pose = platform.poses.emplace_back();
-            buildPose(data, entry, pose);
+            buildPose(frame, pose, transformer);
 
-            // build image
-            Image& image = scene->images.emplace_back();
-            buildImage(data, entry, image);
+            // camera stored in `palatform.camers` must be normalized, them will be serialized to scene.mvs
+            Platform::Camera& camera = platform.cameras.emplace_back(kmatrix, RMatrix::IDENTITY, CMatrix::ZERO);
 
-            Platform::Camera& camera = platform.cameras.emplace_back(KMatrix(vals.data()), RMatrix::IDENTITY, CMatrix::ZERO);
             // normalize intrinic matrix
+            // Now, the width and height of intrinsic matrix are same with image size(also depth map size)
             camera.K = camera.GetScaledK(REAL(1)/Camera::GetNormalizationScale(image.width, image.height)); 
 
             // assemble projection matrix, build image camera
+            // Associate image with the intrinsic matrix, the intrinsic will be resize with image size
             image.UpdateCamera(scene->platforms);
-        }
-
-        // set raw depthmap size
-        depthMapSize.width = 256;
-        depthMapSize.height = 192;
-
-        // select best neighboring views for each image
-        selectViews();
-
-        scene->selecViewsCallback = [&](uint32_t imageID, DepthData& depthData){
-            return selecViews(imageID, depthData);
-        };
-
-        scene->initDepthMapCallback = [&](uint32_t imageID, DepthData& depthData){
-            return initDepthMap(imageID, depthData);
-        };
-    }
-
-    cv::Mat ARKITScene::getDepthMap(int index, const cv::Size& newSize) {
-        if (index < 0 || index >= arkitFrames.size()) {
-            throw std::runtime_error("Invalid index: " + std::to_string(index));
-        }
-
-        cv::Mat depthmap = readDepthRaw(arkitFrames[index].depthmap_name, depthMapSize.width, depthMapSize.height);
-
-        if (newSize.empty() || newSize == depthMapSize) {
-            return depthmap;
-        }
-
-        if (std::abs(newSize.aspectRatio() - depthMapSize.aspectRatio()) > 1e-6) {
-            throw std::runtime_error("Invalid depthmap size");
-        }
-
-        // safe depth, set pixel depth to 1e-7 for invalid depths
-        depthmap.setTo(1e-7, depthmap <= 0); 
-
-        // resize
-        cv::Mat resizedInvDepth;
-        cv::resize(1.0f / depthmap, resizedInvDepth, newSize, 0, 0, cv::INTER_LINEAR);
-
-        return 1.0f / resizedInvDepth;
-    }
-
-    // Serializes only arkit frames
-    void ARKITScene::save(const std::string& meta_json_path) {
-        json arkitScene;
-        arkitScene["frames"] = json::array();
-
-        for(auto& f : arkitFrames) {
-            arkitScene["frames"].push_back({
-                {"index", f.index},
-                {"base_name", f.base_name},
-                {"image_name", f.image_name},
-                {"meta_name", f.meta_name},
-                {"depthmap_name", f.depthmap_name}
-            });
-        }
-
-        arkitScene["depthmapWidth"] = depthMapSize.width;
-        arkitScene["depthmapHeight"] = depthMapSize.height;
-        
-        std::ofstream file(meta_json_path);
-
-        if(!file) {
-            throw std::runtime_error("Failed to opne file: "+ meta_json_path);
-        }
-
-        file << arkitScene.dump(4);
-
-        std::cout << "Save frames to " << meta_json_path << std::endl;
+        }     
     }
 
     // Load arkit frames
     void ARKITScene::load(const std::string& meta_json_path) {
         std::ifstream file(meta_json_path);
-
         if(!file) {
             throw std::runtime_error("Failed to opne file: "+ meta_json_path);
         }
@@ -593,27 +598,44 @@ namespace MVS::ARKIT {
         json j;
         file >> j;
         
-        int depthmapWidth = j["depthmapWidth"].get<int>();
-        int depthmapHeight = j["depthmapHeight"].get<int>();
+        arkitFrames = j.get<std::vector<ARKITFrame>>(); 
 
-        depthMapSize = cv::Size(depthmapWidth, depthmapHeight);
-
-        for (auto& frame : j["frames"]) {
-            arkitFrames.emplace_back(
-                frame["index"].get<int>(),
-                frame["base_name"].get<std::string>(),
-                frame["image_name"].get<std::string>(),
-                frame["meta_name"].get<std::string>(),
-                frame["depthmap_name"].get<std::string>()
-            );
+        if(arkitFrames.size() < 8) {
+            throw std::runtime_error("There are not enough frames: "+ std::to_string(arkitFrames.size()));
         }
 
-        scene->selecViewsCallback = [&](uint32_t imageID, DepthData& depthData){
-            return selecViews(imageID, depthData);
+        // detect the correct depth map size
+        depthMapSize = computeInitDepthMapSize(arkitFrames[0]);
+    }
+
+    void ARKITScene::initScene(const std::string& meta_json_path) {
+        
+        load(meta_json_path);
+
+        scene->selecViewsCallback = [&](uint32_t imageID, DepthData& depthData) ->bool {
+            depthData.neighbors.CopyOf(scene->images[imageID].neighbors);
+            return true;
         };
 
         scene->initDepthMapCallback = [&](uint32_t imageID, DepthData& depthData){
-            return initDepthMap(imageID, depthData);
+            return initDepthMap(arkitFrames[imageID], depthData);
         };
+    }
+
+    // the function may be called before invoking scene.save, it will clear the resolution of scene.images,
+    // Once the resolution becomes invalid, OpenMVS will save the normalized intrinsics and resize them to the actual image size when initializing.
+    // The actual image size is deteced by loading only image header. 
+    // After then the resized intrinsics will be corresponding perfectly to actual image size.
+    // 
+    // If the function is not called before scene.save, the current image size (depth map size) and non-normalized intrinsics will be saved,
+    // shich will result in a low-resolution reconstruction.
+    void ARKITScene::clearResolutions() {
+        for(int i=0; i < scene->images.GetSize(); i++) {
+            auto& image = scene->images[i];
+            
+            if(image.IsValid()) {
+                image.width = image.height = 0;
+            }
+        }
     }
 }

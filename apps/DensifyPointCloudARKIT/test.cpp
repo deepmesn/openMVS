@@ -255,13 +255,16 @@ int main(int argc, LPCTSTR* argv) {
 		return EXIT_FAILURE;    
     Scene scene(1);
 
-    ARKITScene arkitScene(&scene);
-    arkitScene.build("/data/reconstruction/costa/costa");
-    arkitScene.buildCoarsePointcloud("/data/reconstruction/costa/costa/bbb.ply");
-    // arkitScene.selectViews();
+	std::unique_ptr<ARKITScene> arkitScene = ARKITScene::getInstance(&scene, SceneType::VGGT);
 
-	// arkitScene.save("/data/reconstruction/costa/mvs1/arkit.json");
-    // scene.Save("/data/reconstruction/costa/mvs1/scene.mvs", (ARCHIVE_TYPE)OPT::nArchiveType);
-    std::cout << "Entries :" << arkitScene.arkitFrames.size() << std::endl;
+    arkitScene->build("/home/cgq/reconstruction/costa/vggt1/image_metas.json");
+    // arkitScene->buildCoarsePointcloud("/home/cgq/reconstruction/costa/vggt1_mvs1/bbb.ply");
+    arkitScene->selectViews();
+
+	arkitScene->clearResolutions();
+	
+    scene.Save("/home/cgq/reconstruction/costa/vggt1_mvs1/scene.mvs", (ARCHIVE_TYPE)OPT::nArchiveType);
+
+    std::cout << "Entries :" << arkitScene->arkitFrames.size() << std::endl;
     return 0;
 }

@@ -300,8 +300,9 @@ int main(int argc, LPCTSTR* argv) {
 	if (sceneType == Scene::SCENE_NA)
 		return EXIT_FAILURE;
 
-	MVS::ARKIT::ARKITScene arkitScene(&scene);
-	arkitScene.load("arkit.json");
+	std::unique_ptr<MVS::ARKIT::ARKITScene> arkitScene = MVS::ARKIT::ARKITScene::getInstance(&scene, MVS::ARKIT::SceneType::VGGT);
+
+	arkitScene->initScene("/home/cgq/reconstruction/costa/vggt1/image_metas.json");
 
 	// if (!scene.IsBounded())
 	// 	scene.EstimateROI(OPT::nEstimateROI, 1.1f);
