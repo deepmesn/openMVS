@@ -257,15 +257,18 @@ int main(int argc, LPCTSTR* argv) {
 
 	std::unique_ptr<ARKITScene> arkitScene = ARKITScene::getInstance(&scene, SceneType::VGGT);
 
-    // arkitScene->build("/home/cgq/reconstruction/costa/vggt1/image_metas.json");
-    arkitScene->build("/home/cgq/reconstruction/costa/vggt_arkit/new_json.json");
-    arkitScene->buildCoarsePointcloud("/home/cgq/reconstruction/costa/vggt_arkit/bbb.ply");
-    // arkitScene->selectViews();
+	const std::string meta_json = "/home/cgq/reconstruction/xuli/vggt_1/image_metas.json";
+	const std::string output_dir = "/home/cgq/reconstruction/xuli/vggt_mvs_1/";
 
-	// arkitScene->clearResolutions();
+    // arkitScene->build("/home/cgq/reconstruction/costa/vggt1/image_metas.json");
+    arkitScene->build(meta_json);
 	
-    // scene.Save("/home/cgq/reconstruction/costa/vggt1_mvs1/scene.mvs", (ARCHIVE_TYPE)OPT::nArchiveType);
-    // scene.Save("/home/cgq/reconstruction/costa/vggt_arkit/scene.mvs", (ARCHIVE_TYPE)OPT::nArchiveType);
+    // arkitScene->buildCoarsePointcloud(output_dir + "ccc.ply");
+    arkitScene->selectViews();
+
+	arkitScene->clearResolutions();
+	
+    scene.Save(output_dir + "scene.mvs", (ARCHIVE_TYPE)OPT::nArchiveType);
 
     std::cout << "Entries :" << arkitScene->arkitFrames.size() << std::endl;
     return 0;

@@ -531,7 +531,7 @@ namespace MVS::ARKIT {
 
             for(int row = 0; row < deptmap.rows; row++) {
                 for(int col = 0; col < deptmap.cols; col++) {
-                    float depth = 4* deptmap.at<float>(row, col);
+                    float depth = deptmap.at<float>(row, col);
                     if(depth < 1e-6 || std::isnan(depth)) {
                         continue;
                     }

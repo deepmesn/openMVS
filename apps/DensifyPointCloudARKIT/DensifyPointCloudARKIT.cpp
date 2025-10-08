@@ -302,7 +302,7 @@ int main(int argc, LPCTSTR* argv) {
 
 	std::unique_ptr<MVS::ARKIT::ARKITScene> arkitScene = MVS::ARKIT::ARKITScene::getInstance(&scene, MVS::ARKIT::SceneType::VGGT);
 
-	arkitScene->initScene("/home/cgq/reconstruction/costa/vggt1/image_metas.json");
+	arkitScene->initScene("/home/cgq/reconstruction/xuli/vggt_1/image_metas.json");
 
 	// if (!scene.IsBounded())
 	// 	scene.EstimateROI(OPT::nEstimateROI, 1.1f);
