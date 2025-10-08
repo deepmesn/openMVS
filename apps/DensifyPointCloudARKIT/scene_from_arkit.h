@@ -23,16 +23,18 @@ namespace MVS::ARKIT {
     struct ARKITFrame {
         int index;                  // image index
         bool fixed_width;           // fixed dim when non-uniform resize, `true`: fixed width, `false`: fixed height
-        int c;                      // channels
-        int width;                  // corresponding to the size of depthmap, confmap, intrinsics but not the image size
-        int height;                 // corresponding to the size of depthmap, confmap, intrinsics but not the image size
+        int c;                      // corresponding to the size an channels of image and intrinsics
+        int image_width;            
+        int image_height;           
+        int depthmap_width;         // corresponding to the size of depthmap, confmap
+        int depthmap_height;
         std::string image_name;     // image full path
         std::string intrinic_name;  // intrinsic full path
         std::string extrinsic_name; // extrinsic full path
         std::string depth_name;     // depthmap full path
         std::string conf_name;      // confidence map full path
 
-        ARKITFrame() : index(0), fixed_width(true), c(3), width(0), height(0) {}     
+        ARKITFrame() : index(0), fixed_width(true), c(3), image_width(0), image_height(0) {}     
     };
 
     enum class SceneType {

@@ -82,8 +82,8 @@ namespace MVS::ARKIT {
         return 1.0f / resizedInverseDepth;
     }
 
-    static cv::Size computeInitDepthMapSize(const ARKITFrame& frame) {
-
+    // Compute the depth map size and resize it's aspect ratio to that of original image
+    static void computeInitDepthMapSize(const ARKITFrame& frame, cv::Size& initialSize) {
         IMAGEPTR pImage = Image::ReadImageHeader(frame.image_name);
 
         // load image header
@@ -91,8 +91,12 @@ namespace MVS::ARKIT {
             throw std::runtime_error("Failed to open image: " + frame.image_name);
         }
 
-        cv::Size scaledSize(frame.width, frame.height);
+        // Initial depth map size is same with the input meta
+        initialSize.width = frame.depthmap_width;
+        initialSize.height = frame.depthmap_height;
 
+        // Adjust the initial depth map size to match the aspect ratio of original image 
+        // 
         // uniform-resize(ARKIT), 
         // - the aspect raido of depth map matches precisely that of image, 
         // - we resize uniformly the image using OpenMVS to match depth map's size.
@@ -100,18 +104,17 @@ namespace MVS::ARKIT {
         // non-uniform resize(VGGT),
         // - the depth map size is aligned with multiples of 14
         // - re-compute the aspect ratio
-        if(aspectRatioDiff(cv::Size(pImage->GetWidth(), pImage->GetHeight()), scaledSize)) {
+        if(aspectRatioDiff(cv::Size(pImage->GetWidth(), pImage->GetHeight()), initialSize)) {
             if(frame.fixed_width) {
-                scaledSize.height = ROUND2INT(pImage->GetHeight() * frame.width * 1.0 / pImage->GetWidth());
+                initialSize.height = cv::saturate_cast<int>(pImage->GetHeight() * frame.depthmap_width * 1.0 / pImage->GetWidth());
             } else {
-                scaledSize.width = ROUND2INT(pImage->GetWidth() * frame.height * 1.0 / pImage->GetHeight());
+                initialSize.width = cv::saturate_cast<int>(pImage->GetWidth() * frame.depthmap_height * 1.0 / pImage->GetHeight());
             }
         }
-
-        // mark the correct initial size
-        return scaledSize;
     }
 
+    // Load the original image and resize it to match the aspect ratio of depthMapSize
+    // The depthMapSize has been resized to same aspect ratio with original image, so image resize is uniformed.
     static void buildImage(const ARKITFrame& frame, Image& image, const cv::Size& depthMapSize) {
         image.ID = frame.index;
         image.poseID = frame.index;
@@ -125,6 +128,8 @@ namespace MVS::ARKIT {
         if(!image.ReloadImage(resolution)) {
             throw std::runtime_error("Failed to open image: " + frame.image_name);
         }
+
+        ASSERT(image.GetSize() == depthMapSize);
     }
 
     template <int m, int n>
@@ -150,6 +155,7 @@ namespace MVS::ARKIT {
         }
     } 
 
+    // Load intrinsic matrix and rescale it to the size of initial depth map size
     static void buildIntrinsic(const ARKITFrame& frame, KMatrix& kmatrix, const cv::Size& depthMapSize, bool convertIntrinsicSystem) {
         std::ifstream file(frame.intrinic_name);
 
@@ -170,14 +176,21 @@ namespace MVS::ARKIT {
 
         KMatrix scale = KMatrix::eye();
 
+        const cv::Size intrinsic_size(frame.image_width, frame.image_height);
+
         // non-uniform resizing intrinsic
-        if(depthMapSize != cv::Size(frame.width, frame.height)) {
-            scale(0,0) = depthMapSize.width * 1.0/frame.width;
-            scale(1,1) = depthMapSize.height * 1.0 / frame.height;
+        if(depthMapSize != intrinsic_size) {
+            scale(0,0) = scale(1,1) = depthMapSize.width * 1.0/intrinsic_size.width;
+
+            if(aspectRatioDiff(depthMapSize, intrinsic_size)) {
+                scale(1,1) = depthMapSize.height * 1.0 / intrinsic_size.height;
+            } 
         }
 
+        // rescale intrinsic
         kmatrix = scale * KMatrix(vals.data());
 
+        // convert to OpneMVS image coordinates
         if(convertIntrinsicSystem) {
             kmatrix(0,2) -= 0.5;
             kmatrix(1,2) -= 0.5;
@@ -268,8 +281,10 @@ namespace MVS::ARKIT {
         j.at("index").get_to(info.index);
         j.at("image_name").get_to(info.image_name);
         j.at("c").get_to(info.c);
-        j.at("width").get_to(info.width);
-        j.at("height").get_to(info.height);
+        j.at("image_width").get_to(info.image_width);
+        j.at("image_height").get_to(info.image_height);
+        j.at("depthmap_width").get_to(info.depthmap_width);
+        j.at("depthmap_height").get_to(info.depthmap_height);
         j.at("depth_name").get_to(info.depth_name);
         j.at("intrinic_name").get_to(info.intrinic_name);
         j.at("extrinsic_name").get_to(info.extrinsic_name);
@@ -478,7 +493,7 @@ namespace MVS::ARKIT {
         
         ASSERT(!aspectRatioDiff(depthMapSize, initSize));
 
-        cv::Mat depthmap = readDepthRaw(frame.depth_name, frame.width, frame.height);
+        cv::Mat depthmap = readDepthRaw(frame.depth_name, frame.image_width, frame.image_height);
 
         if (initSize == depthmap.size()) {
             return depthmap;
@@ -516,12 +531,20 @@ namespace MVS::ARKIT {
 
             for(int row = 0; row < deptmap.rows; row++) {
                 for(int col = 0; col < deptmap.cols; col++) {
-                    float depth = deptmap.at<float>(row, col);
-                    if(depth < 1e-6) {
+                    float depth = 4* deptmap.at<float>(row, col);
+                    if(depth < 1e-6 || std::isnan(depth)) {
                         continue;
                     }
                     
+                    // int _row = deptmap.rows -1 - row;
+                    // int _col = deptmap.cols -1 - col;
+
                     const TPoint3<REAL>& P = camera.TransformPointI2W(TPoint3<REAL>(col, row, depth));
+
+                    if(std::isnan(P[0]) || std::isnan(P[1]) || std::isnan(P[2])) {
+                        continue;
+                    }
+
                     pointcloud.points.emplace_back(P[0], P[1], P[2]);
                     
                     // BGR to RGB
@@ -547,6 +570,7 @@ namespace MVS::ARKIT {
     // So, we must first calculate the intermediate depth map size using `computeInitDepthMapSize` to convert the non-uniform resizing to uniform one.
     void ARKITScene::build(const std::string& meta_json_path) {
 
+        // compute the initial depth map size
         load(meta_json_path);
 
         // only one platform
@@ -562,13 +586,11 @@ namespace MVS::ARKIT {
         kmatrices.reserve(arkitFrames.size());
 
         for(auto& frame : arkitFrames) {
-            // initialize the image size with depth map size
+            // resize the image to the size of depth map
             Image& image = scene->images.emplace_back();
             buildImage(frame, image, depthMapSize);
-
-            ASSERT(image.GetSize() == depthMapSize);
             
-            // initialize the intrinsic matrix with depth map size
+            // resize the intrinsics to the size of depth map
             KMatrix kmatrix;
             buildIntrinsic(frame, kmatrix, depthMapSize, toTopLeftCenter);
 
@@ -605,7 +627,7 @@ namespace MVS::ARKIT {
         }
 
         // detect the correct depth map size
-        depthMapSize = computeInitDepthMapSize(arkitFrames[0]);
+        computeInitDepthMapSize(arkitFrames[0], depthMapSize);
     }
 
     void ARKITScene::initScene(const std::string& meta_json_path) {
