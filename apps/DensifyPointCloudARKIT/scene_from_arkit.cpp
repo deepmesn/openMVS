@@ -52,14 +52,24 @@ namespace MVS::ARKIT {
     }
 
     // Read depth map from ARKIT
-    static cv::Mat readDepthRaw(const std::string& path, int width, int height) {
-        std::ifstream file(path, std::ios::binary);
+    static cv::Mat readDepthRaw(const ARKITFrame& frame) {
+        
+        std::ifstream file(frame.depth_name, std::ios::binary);
+
         if (!file.is_open()) {
-            throw std::runtime_error("Cannot open depth file: " + path);
+            throw std::runtime_error("Cannot open depth file: " + frame.depth_name);
         }
 
-        cv::Mat depth(height, width, CV_32FC1);
-        file.read(reinterpret_cast<char*>(depth.data), width * height * sizeof(float));
+        cv::Mat depth(frame.depthmap_height, frame.depthmap_width, CV_32FC1);
+        const size_t expected_size = depth.size().area() * sizeof(float);
+
+        file.read(reinterpret_cast<char*>(depth.data), expected_size);
+
+        // check bytes
+        if (file.gcount() != expected_size) {
+            throw std::runtime_error("Incomplete depth data read. File may be corrupted.");
+        }
+
         return depth;
     }
 
@@ -174,27 +184,36 @@ namespace MVS::ARKIT {
 
         file.close();
 
-        KMatrix scale = KMatrix::eye();
+        KMatrix K(vals.data());
+
+        // convert to OpneMVS image coordinates
+        if(convertIntrinsicSystem) {
+            K(0,2) -= 0.5;
+            K(1,2) -= 0.5;
+        }
+
+        double sx = 1.0;
+        double sy = 1.0;
 
         const cv::Size intrinsic_size(frame.image_width, frame.image_height);
 
         // non-uniform resizing intrinsic
         if(depthMapSize != intrinsic_size) {
-            scale(0,0) = scale(1,1) = depthMapSize.width * 1.0/intrinsic_size.width;
+            sx = sy = depthMapSize.width * 1.0/intrinsic_size.width;
 
             if(aspectRatioDiff(depthMapSize, intrinsic_size)) {
-                scale(1,1) = depthMapSize.height * 1.0 / intrinsic_size.height;
+                sy = depthMapSize.height * 1.0 / intrinsic_size.height;
             } 
         }
 
-        // rescale intrinsic
-        kmatrix = scale * KMatrix(vals.data());
+        using TYPE = KMatrix::Type;
 
-        // convert to OpneMVS image coordinates
-        if(convertIntrinsicSystem) {
-            kmatrix(0,2) -= 0.5;
-            kmatrix(1,2) -= 0.5;
-        }
+        // rescale intrinsic
+		kmatrix =  KMatrix(
+			K(0,0) * sx, K(0,1)*sx, (K(0,2)+TYPE(0.5)) * sx-TYPE(0.5),
+			TYPE(0),    K(1,1)*sy,  (K(1,2)+TYPE(0.5)) * sy-TYPE(0.5),
+			TYPE(0),    TYPE(0),    TYPE(1)
+		);
     }
 
     // ARKIT use a right-handed coordinate sysetm with the x-axis pointing to right, 
@@ -493,7 +512,7 @@ namespace MVS::ARKIT {
         
         ASSERT(!aspectRatioDiff(depthMapSize, initSize));
 
-        cv::Mat depthmap = readDepthRaw(frame.depth_name, frame.image_width, frame.image_height);
+        cv::Mat depthmap = readDepthRaw(frame);
 
         if (initSize == depthmap.size()) {
             return depthmap;

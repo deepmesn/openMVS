@@ -77,6 +77,9 @@ int nArchiveType;
 int nProcessPriority;
 unsigned nMaxThreads;
 String strConfigFileName;
+// config file for arkit/vggt
+String strARKITMetaPath;
+String strDepthSceneType;
 boost::program_options::variables_map vm;
 } // namespace OPT
 
@@ -140,6 +143,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv) {
 	unsigned nOptimize;
 	int nIgnoreMaskLabel;
 	bool bRemoveDmaps;
+
 	boost::program_options::options_description config("Densify options");
 	config.add_options()
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input filename containing camera poses and image list")
@@ -174,6 +178,8 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv) {
 		("remove-dmaps", boost::program_options::value(&bRemoveDmaps)->default_value(false), "remove depth-maps after fusion")
 		("tower-mode", boost::program_options::value(&OPT::nTowerMode)->default_value(4), "add a cylinder of points in the center of ROI; scene assume to be Z-up oriented (0 - disabled, 1 - replace, 2 - append, 3 - select neighbors, 4 - select neighbors & append, <0 - force tower mode)")
 		("normalize-coordinates", boost::program_options::value(&OPT::nNormalizeCoordinates)->default_value(0), "normalize scene coordinates and output the inverse transform to file (0 - disabled, 1 - center, 2 - center & scale)")
+		("meta-config", boost::program_options::value<std::string>(&OPT::strARKITMetaPath), "arkit/vggt meta config file path)")
+		("depth-scene", boost::program_options::value<std::string>(&OPT::strDepthSceneType), "ARKIT/VGGT)")
 		;
 
 	// hidden options, allowed both on command line and
@@ -295,14 +301,24 @@ int main(int argc, LPCTSTR* argv) {
 
 	VERBOSE("DensifyPointCloudARKIT: desiredDeviceID: %d, nResolutionLevel: %d, nMaxResolution: %d, nMinResolution, %d", SEACAVE::CUDA::desiredDeviceID, OPTDENSE::nResolutionLevel, OPTDENSE::nMaxResolution, OPTDENSE::nMinResolution);
 
+	if(OPT::strARKITMetaPath.empty()) {
+		VERBOSE("Missing arkit meta config file.");
+		return EXIT_FAILURE;
+	}
+
 	// // load and estimate a dense point-cloud
 	const Scene::SCENE_TYPE sceneType(scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)));
 	if (sceneType == Scene::SCENE_NA)
 		return EXIT_FAILURE;
 
-	std::unique_ptr<MVS::ARKIT::ARKITScene> arkitScene = MVS::ARKIT::ARKITScene::getInstance(&scene, MVS::ARKIT::SceneType::VGGT);
+	std::unique_ptr<MVS::ARKIT::ARKITScene> arkitScene = MVS::ARKIT::ARKITScene::getInstance(&scene, MVS::ARKIT::depthSceneFrom(OPT::strDepthSceneType));
 
-	arkitScene->initScene("/home/cgq/reconstruction/xuli/vggt_1/image_metas.json");
+	try {
+		arkitScene->initScene(OPT::strARKITMetaPath);
+	} catch(const std::runtime_error& e) {
+		VERBOSE("Failed to init arkit: %s", e.what());
+		return EXIT_FAILURE;
+	}
 
 	// if (!scene.IsBounded())
 	// 	scene.EstimateROI(OPT::nEstimateROI, 1.1f);

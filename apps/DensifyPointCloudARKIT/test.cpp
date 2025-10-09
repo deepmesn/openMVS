@@ -255,15 +255,16 @@ int main(int argc, LPCTSTR* argv) {
 		return EXIT_FAILURE;    
     Scene scene(1);
 
-	std::unique_ptr<ARKITScene> arkitScene = ARKITScene::getInstance(&scene, SceneType::VGGT);
+	std::unique_ptr<ARKITScene> arkitScene = ARKITScene::getInstance(&scene, DepthSceneType::ARKIT);
 
-	const std::string meta_json = "/home/cgq/reconstruction/xuli/vggt_1/image_metas.json";
-	const std::string output_dir = "/home/cgq/reconstruction/xuli/vggt_mvs_1/";
+	const std::string meta_json = "/data/reconstruction/clock/arkit/arkit_meta.json";
+	const std::string output_dir = "/data/reconstruction/clock/arkit_mvs/";
 
     // arkitScene->build("/home/cgq/reconstruction/costa/vggt1/image_metas.json");
     arkitScene->build(meta_json);
 	
-    // arkitScene->buildCoarsePointcloud(output_dir + "ccc.ply");
+    arkitScene->buildCoarsePointcloud(output_dir + "bbb.ply");
+
     arkitScene->selectViews();
 
 	arkitScene->clearResolutions();

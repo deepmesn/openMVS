@@ -37,10 +37,22 @@ namespace MVS::ARKIT {
         ARKITFrame() : index(0), fixed_width(true), c(3), image_width(0), image_height(0) {}     
     };
 
-    enum class SceneType {
+    enum class DepthSceneType {
         ARKIT,
         VGGT
     };
+
+    inline DepthSceneType depthSceneFrom(const std::string& strType) {
+        if(strType == "VGGT") {
+            return DepthSceneType::VGGT;
+        }
+
+        if(strType == "ARKIT") {
+            return DepthSceneType::ARKIT;
+        }
+
+        throw std::runtime_error("Invalid depth scene: "+ strType);
+    }
 
     using World2CameraTransformer = std::function<Matrix4x4(const Matrix4x4&)>;
 
@@ -80,8 +92,8 @@ namespace MVS::ARKIT {
         ARKITScene(Scene *scene, World2CameraTransformer transformer = nullptr, bool toTopLeftCenter = true): scene(scene), toTopLeftCenter(toTopLeftCenter), depthMapSize(), transformer(transformer) {}
 
         // construct scene instance by type
-        static std::unique_ptr<ARKITScene> getInstance(Scene *scene, SceneType type) {
-            return std::make_unique<ARKITScene>(scene, type == SceneType::ARKIT ? world2Camera_ARKIT: nullptr);
+        static std::unique_ptr<ARKITScene> getInstance(Scene *scene, DepthSceneType type) {
+            return std::make_unique<ARKITScene>(scene, type == DepthSceneType::ARKIT ? world2Camera_ARKIT: nullptr);
         }
 
         // Assembly data structures of OpenMVS.
