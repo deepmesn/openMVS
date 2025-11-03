@@ -6,11 +6,14 @@
 
 #include "scene_from_arkit.h"
 #include <boost/program_options.hpp>
+#include <filesystem>
 
 using namespace MVS;
 using namespace MVS::ARKIT;
 
 #define APPNAME _T("arkit_tool")
+
+namespace fs = std::filesystem;
 
 namespace OPT {
 String strInputFileName;
@@ -44,6 +47,11 @@ int nArchiveType;
 int nProcessPriority;
 unsigned nMaxThreads;
 String strConfigFileName;
+std::string meta_json_path;
+std::string selected_views_path;
+std::string pointcloud_path;
+std::string scene_mvs_path;
+
 boost::program_options::variables_map vm;
 } // namespace OPT
 
@@ -107,6 +115,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv) {
 	unsigned nOptimize;
 	int nIgnoreMaskLabel;
 	bool bRemoveDmaps;
+
 	boost::program_options::options_description config("Densify options");
 	config.add_options()
 		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input filename containing camera poses and image list")
@@ -141,6 +150,10 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv) {
 		("remove-dmaps", boost::program_options::value(&bRemoveDmaps)->default_value(false), "remove depth-maps after fusion")
 		("tower-mode", boost::program_options::value(&OPT::nTowerMode)->default_value(4), "add a cylinder of points in the center of ROI; scene assume to be Z-up oriented (0 - disabled, 1 - replace, 2 - append, 3 - select neighbors, 4 - select neighbors & append, <0 - force tower mode)")
 		("normalize-coordinates", boost::program_options::value(&OPT::nNormalizeCoordinates)->default_value(0), "normalize scene coordinates and output the inverse transform to file (0 - disabled, 1 - center, 2 - center & scale)")
+		("meta-path", boost::program_options::value(&OPT::meta_json_path), "meta json path")
+		("selected_views_path", boost::program_options::value(&OPT::selected_views_path)->default_value(""), "selected views path")
+		("pointcloud_path", boost::program_options::value(&OPT::pointcloud_path)->default_value(""), "pointcloud output dir")
+		("scene_mvs_path", boost::program_options::value(&OPT::scene_mvs_path)->default_value(""), "scene mvs dir")
 		;
 
 	// hidden options, allowed both on command line and
@@ -249,6 +262,8 @@ void Application::Finalize() {
 	CLOSE_LOG();
 }
 
+using json = nlohmann::json;
+
 int main(int argc, LPCTSTR* argv) {
 	Application application;
 	if (!application.Initialize(argc, argv))
@@ -257,19 +272,58 @@ int main(int argc, LPCTSTR* argv) {
 
 	std::unique_ptr<ARKITScene> arkitScene = ARKITScene::getInstance(&scene, DepthSceneType::ARKIT);
 
-	const std::string meta_json = "/data/reconstruction/clock/arkit/arkit_meta.json";
-	const std::string output_dir = "/data/reconstruction/clock/arkit_mvs/";
-
-    // arkitScene->build("/home/cgq/reconstruction/costa/vggt1/image_metas.json");
-    arkitScene->build(meta_json);
 	
-    arkitScene->buildCoarsePointcloud(output_dir + "bbb.ply");
+    // arkitScene->build("/home/cgq/reconstruction/costa/vggt1/image_metas.json");
+    arkitScene->build(OPT::meta_json_path);
+	
+	const fs::path pointcloud_path = OPT::pointcloud_path;
+	const fs::path selected_view_path = OPT::selected_views_path;
+	const fs::path scene_mvs_path = OPT::scene_mvs_path;
+
+	auto createIfNotExists = [](const fs::path& filePath) {
+		if(!filePath.empty() && !fs::exists(filePath.parent_path())) {
+			fs::create_directories(filePath.parent_path());
+		}
+	};
+
+	createIfNotExists(pointcloud_path);
+	createIfNotExists(selected_view_path);
+	createIfNotExists(scene_mvs_path);
+
+	if(!pointcloud_path.empty()) {
+		arkitScene->buildCoarsePointcloud(pointcloud_path.string());
+	}
 
     arkitScene->selectViews();
 
-	arkitScene->clearResolutions();
-	
-    scene.Save(output_dir + "scene.mvs", (ARCHIVE_TYPE)OPT::nArchiveType);
+	if(!selected_view_path.empty()) {
+
+		json j = json::array();
+
+		// save selected views
+		for(auto& frame : arkitScene->arkitFrames) {
+			json group = json::array();
+			
+			group.push_back(frame.index);
+
+			int count = scene.images[frame.index].neighbors.size();
+			for(int i =0; i< count; i++) {
+				const ViewScore& score = scene.images[frame.index].neighbors[i];
+				group.push_back(score.ID);
+			}
+			j.push_back(group);
+		}
+		
+		std::ofstream file(selected_view_path.string());
+		file << std::setw(4) << j;
+		file.flush(); 
+		file.close();
+	}
+
+	if(!scene_mvs_path.empty()) {
+		arkitScene->clearResolutions();		
+		scene.Save(scene_mvs_path.string(), (ARCHIVE_TYPE)OPT::nArchiveType);
+	}
 
     std::cout << "Entries :" << arkitScene->arkitFrames.size() << std::endl;
     return 0;

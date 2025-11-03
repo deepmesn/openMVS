@@ -8,6 +8,29 @@ namespace MVS::ARKIT {
     namespace fs = std::filesystem;
     using json = nlohmann::json;
 
+    void from_json(const json& j, ARKITFrame& info) {
+        j.at("index").get_to(info.index);
+        j.at("image_name").get_to(info.image_name);
+        info.mask_name = j.value("mask_name", "");
+
+        j.at("image_width").get_to(info.image_width);
+        j.at("image_height").get_to(info.image_height);
+        j.at("depthmap_width").get_to(info.depthmap_width);
+        j.at("depthmap_height").get_to(info.depthmap_height);
+        j.at("intrinsic_name").get_to(info.intrinsic_name);
+        j.at("extrinsic_name").get_to(info.extrinsic_name);
+        j.at("estimated_depthmap_name").get_to(info.estimated_depthmap_name);
+        j.at("scene_depthmap_name").get_to(info.scene_depthmap_name);
+        j.at("scene_conf_name").get_to(info.scene_conf_name);
+        j.at("smoothed_depthmap_name").get_to(info.smoothed_depthmap_name);
+        j.at("smoothed_conf_name").get_to(info.smoothed_conf_name);
+        j.at("depthmap_name").get_to(info.depthmap_name);
+        j.at("depthmap_type").get_to(info.depthmap_type);
+        j.at("depthmap_offset_name").get_to(info.depthmap_offset_name);
+        j.at("depthmap_offset_weight").get_to(info.depthmap_offset_weight);
+        j.at("conf_name").get_to(info.conf_name);
+    }
+
     // compute normal to the surface given the 4 neighbors
     // Refer: https://arxiv.org/pdf/2304.12031.pdf
     // Codes: libs/MVS/PatchMatchCUDA.cu#ComputeDepthGradient
@@ -51,16 +74,14 @@ namespace MVS::ARKIT {
         return {normal.x, normal.y, normal.z, depth};
     }
 
-    // Read depth map from ARKIT
-    static cv::Mat readDepthRaw(const ARKITFrame& frame) {
-        
-        std::ifstream file(frame.depth_name, std::ios::binary);
+    static cv::Mat readRaw(const std::string& raw_path, const int height, const int width) {
+        std::ifstream file(raw_path, std::ios::binary);
 
         if (!file.is_open()) {
-            throw std::runtime_error("Cannot open depth file: " + frame.depth_name);
+            throw std::runtime_error("Cannot open depth file: " + raw_path);
         }
 
-        cv::Mat depth(frame.depthmap_height, frame.depthmap_width, CV_32FC1);
+        cv::Mat depth(height, width, CV_32FC1);
         const size_t expected_size = depth.size().area() * sizeof(float);
 
         file.read(reinterpret_cast<char*>(depth.data), expected_size);
@@ -68,6 +89,19 @@ namespace MVS::ARKIT {
         // check bytes
         if (file.gcount() != expected_size) {
             throw std::runtime_error("Incomplete depth data read. File may be corrupted.");
+        }
+
+        return depth;
+    }
+
+    // Read depth map from ARKIT
+    static cv::Mat readDepthRaw(const ARKITFrame& frame) {
+        
+        cv::Mat depth = readRaw(frame.depthmap_name, frame.depthmap_height, frame.depthmap_width);
+
+        if(!frame.depthmap_offset_name.empty()) {
+            cv::Mat offset = readRaw(frame.depthmap_offset_name, frame.depthmap_height, frame.depthmap_width);
+            depth += frame.depthmap_offset_weight * offset;
         }
 
         return depth;
@@ -142,6 +176,31 @@ namespace MVS::ARKIT {
         ASSERT(image.GetSize() == depthMapSize);
     }
 
+    static void buildMask(const ARKITFrame& frame, Image& mask, const cv::Size& depthMapSize) {
+        mask.ID = frame.index;
+        mask.poseID = frame.index;
+        mask.platformID = 0;
+        mask.cameraID = frame.index;            
+        mask.name = frame.mask_name;
+
+        // reload image pixels with corrent size
+        if(!mask.LoadImage(frame.mask_name)) {
+            throw std::runtime_error("Failed to open mask image: " + frame.mask_name);
+        }
+
+        unsigned resolution = std::max(depthMapSize.width, depthMapSize.height);
+
+        const REAL scale = (REAL)resolution /MAXF(mask.width, mask.height);
+
+        const cv::Size scaledSize(Image8U::computeResize(mask.GetSize(), scale));
+        
+        cv::resize(mask.image, mask.image, scaledSize, 0, 0, cv::INTER_NEAREST);
+
+        mask.scale =scale;
+        mask.width = (uint32_t)scaledSize.width;
+        mask.height = (uint32_t)scaledSize.height;
+    }
+
     template <int m, int n>
     static void parseMatrix(const std::string& s, std::vector<double>& vals) {
 
@@ -167,16 +226,16 @@ namespace MVS::ARKIT {
 
     // Load intrinsic matrix and rescale it to the size of initial depth map size
     static void buildIntrinsic(const ARKITFrame& frame, KMatrix& kmatrix, const cv::Size& depthMapSize, bool convertIntrinsicSystem) {
-        std::ifstream file(frame.intrinic_name);
+        std::ifstream file(frame.intrinsic_name);
 
         if(!file.is_open()) {
-            throw std::runtime_error("Failed to open file: " + frame.intrinic_name);
+            throw std::runtime_error("Failed to open file: " + frame.intrinsic_name);
         }
 
         std::string line;
 
         if(!std::getline(file, line)) {
-            throw std::runtime_error("Invalidate file: " + frame.intrinic_name);
+            throw std::runtime_error("Invalidate file: " + frame.intrinsic_name);
         }
 
         std::vector<double> vals;
@@ -296,20 +355,6 @@ namespace MVS::ARKIT {
         score.avgAngle += fAngle;
     }
     
-    void from_json(const json& j, ARKITFrame& info) {
-        j.at("index").get_to(info.index);
-        j.at("image_name").get_to(info.image_name);
-        j.at("c").get_to(info.c);
-        j.at("image_width").get_to(info.image_width);
-        j.at("image_height").get_to(info.image_height);
-        j.at("depthmap_width").get_to(info.depthmap_width);
-        j.at("depthmap_height").get_to(info.depthmap_height);
-        j.at("depth_name").get_to(info.depth_name);
-        j.at("intrinic_name").get_to(info.intrinic_name);
-        j.at("extrinsic_name").get_to(info.extrinsic_name);
-        j.at("conf_name").get_to(info.conf_name);
-    }    
-     
     // Typical OpenmMVG + OpenMVS pipeline:
     // 1) OpenMVG generates a sparse point cloud where each point
     // associated with several images, determined through feature matching and bundle adjustment
@@ -543,6 +588,12 @@ namespace MVS::ARKIT {
             // load camera for depthmap projection
             const Camera& camera = loadCamera(frame);
 
+            Image mask;
+
+            if(frame.mask_name != "") {
+                buildMask(frame, mask, depthMapSize);
+            }
+
             const Image& image = scene->images[frame.index];
 
             ASSERT(depthMapSize == image.GetSize());
@@ -550,6 +601,11 @@ namespace MVS::ARKIT {
 
             for(int row = 0; row < deptmap.rows; row++) {
                 for(int col = 0; col < deptmap.cols; col++) {
+
+                    if(mask.HasResolution() && mask.image.at<uint8_t>(row, col) == 0) {
+                        continue;
+                    }
+
                     float depth = deptmap.at<float>(row, col);
                     if(depth < 1e-6 || std::isnan(depth)) {
                         continue;
@@ -609,6 +665,12 @@ namespace MVS::ARKIT {
             Image& image = scene->images.emplace_back();
             buildImage(frame, image, depthMapSize);
             
+            // valid mask
+            if(frame.mask_name != "") {
+                Image mask;
+                buildMask(frame, mask, depthMapSize);
+            }
+
             // resize the intrinsics to the size of depth map
             KMatrix kmatrix;
             buildIntrinsic(frame, kmatrix, depthMapSize, toTopLeftCenter);
