@@ -42,11 +42,18 @@
 #include <cstdint>
 #include <float.h>
 
+#include <cuda.h>
 // CUDA toolkit
 #include <cuda_runtime.h>
 #include <math_constants.h>  // next to cuda_runtime.h
 #include <cuda_runtime_api.h>
+
+#if CUDA_VERSION >= 13000
+#include <texture_types.h>
+#else
 #include <cuda_texture_types.h>
+#endif
+
 #include <curand_kernel.h>
 #include <vector_types.h>
 

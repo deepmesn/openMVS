@@ -9,7 +9,6 @@ namespace MVS::ARKIT {
     using json = nlohmann::json;
 
     void from_json(const json& j, ARKITFrame& info) {
-        j.at("index").get_to(info.index);
         j.at("image_name").get_to(info.image_name);
         info.mask_name = j.value("mask_name", "");
 
@@ -705,6 +704,16 @@ namespace MVS::ARKIT {
 
         if(arkitFrames.size() < 8) {
             throw std::runtime_error("There are not enough frames: "+ std::to_string(arkitFrames.size()));
+        }
+
+        // sort frames by image name
+        std::sort(arkitFrames.begin(), arkitFrames.end(), [](const ARKITFrame& frame1, const ARKITFrame& frame2){
+            return frame1.image_name < frame2.image_name;
+        });
+
+        // reindex frames
+        for(int i = 0; i < arkitFrames.size(); i++) {
+            arkitFrames[i].index = i;
         }
 
         // detect the correct depth map size
