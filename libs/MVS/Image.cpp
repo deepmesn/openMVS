@@ -81,6 +81,19 @@ bool Image::ReadImage(IMAGEPTR pImage, Image8U3& image)
 } // ReadImage
 /*----------------------------------------------------------------*/
 
+bool Image::ReadImage(IMAGEPTR pImage, Image8U& image) 
+{
+	if (!pImage->ReadHeader()) {
+		LOG("error: failed loading image header");
+		return false;
+	}
+	image.create(pImage->GetHeight(), pImage->GetWidth());
+	if (!pImage->ReadData(image.data, PF_GRAY8, 1, (CImage::Size)image.step)) {
+		LOG("error: failed loading image data");
+		return false;
+	}
+	return true;
+}
 
 bool Image::LoadImage(const String& fileName, unsigned nMaxResolution)
 {
