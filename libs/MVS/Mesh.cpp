@@ -1456,18 +1456,28 @@ bool Mesh::LoadGLTF(const String& fileName, bool bBinary)
 /*----------------------------------------------------------------*/
 
 // export the mesh to the given file
-bool Mesh::Save(const String& fileName, const cList<String>& comments, bool bBinary) const
-{
-	if (IsEmpty())
-		return false;
-	TD_TIMER_STARTD();
-	const String ext(Util::getFileExt(fileName).ToLower());
-	bool ret;
-	if (ext == _T(".obj"))
-		ret = SaveOBJ(fileName);
-	else
-	if (ext == _T(".gltf") || ext == _T(".glb"))
-		ret = SaveGLTF(fileName, ext == _T(".glb"));
+bool Mesh::Save(const String& fileName, const cList<String>& comments, bool bBinary) const {
+    if (IsEmpty())
+        return false;
+    TD_TIMER_STARTD();
+    const String ext(Util::getFileExt(fileName).ToLower());
+    bool ret;
+    if (ext == _T(".obj")) {
+        ret = SaveOBJ(fileName);
+    } else if (ext == _T(".gltf") || ext == _T(".glb")) {
+        String baseFileName = Util::getFileFullName(fileName);
+        #pragma omp parallel sections
+        {
+            #pragma omp section
+            {
+                ret = SaveOBJ(String(baseFileName + _T(".obj")));
+            }
+            #pragma omp section
+            {
+                ret = SaveGLTF(fileName, ext == _T(".glb"));
+            }
+        }
+    }
 	else
 		ret = SavePLY(ext != _T(".ply") ? String(fileName+_T(".ply")) : fileName, comments, bBinary);
 	if (!ret)
