@@ -101,7 +101,7 @@ namespace MVS::ARKIT {
 
         // construct scene instance by type
         static std::unique_ptr<ARKITScene> getInstance(Scene *scene, DepthSceneType type) {
-            return std::make_unique<ARKITScene>(scene, type == DepthSceneType::ARKIT ? world2Camera_ARKIT: nullptr);
+            return std::make_unique<ARKITScene>(scene);
         }
 
         // Assembly data structures of OpenMVS.

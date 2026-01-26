@@ -270,7 +270,7 @@ int main(int argc, LPCTSTR* argv) {
 		return EXIT_FAILURE;    
     Scene scene(1);
 
-	std::unique_ptr<ARKITScene> arkitScene = ARKITScene::getInstance(&scene, DepthSceneType::ARKIT);
+	std::unique_ptr<ARKITScene> arkitScene = std::make_unique<ARKITScene>(&scene);
 
 	
     // arkitScene->build("/home/cgq/reconstruction/costa/vggt1/image_metas.json");
