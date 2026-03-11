@@ -31,10 +31,14 @@
 
 #include "../../libs/MVS/Common.h"
 #include "../../libs/MVS/Scene.h"
+#include "../../libs/IO/json.hpp"
+
 #include <boost/program_options.hpp>
+#include <filesystem>
 
 using namespace MVS;
-
+namespace fs = std::filesystem;
+using json = nlohmann::json;
 
 // D E F I N E S ///////////////////////////////////////////////////
 
@@ -71,6 +75,9 @@ unsigned nMaxThreads;
 int nMaxTextureSize;
 String strExportType;
 String strConfigFileName;
+
+String strVerticeFacesDir;
+
 boost::program_options::variables_map vm;
 } // namespace OPT
 
@@ -136,6 +143,7 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 		("orthographic-image-resolution", boost::program_options::value(&OPT::nOrthoMapResolution)->default_value(0), "orthographic image resolution to be generated from the textured mesh - the mesh is expected to be already geo-referenced or at least properly oriented (0 - disabled)")
 		("ignore-mask-label", boost::program_options::value(&OPT::nIgnoreMaskLabel)->default_value(-1), "label value to ignore in the image mask, stored in the MVS scene or next to each image with '.mask.png' extension (-1 - auto estimate mask for lens distortion, -2 - disabled)")
 		("max-texture-size", boost::program_options::value(&OPT::nMaxTextureSize)->default_value(8192), "maximum texture size, split it in multiple textures of this size if needed (0 - unbounded)")
+		("vertice-faces-dir", boost::program_options::value<std::string>(&OPT::strVerticeFacesDir)->default_value(""), "face view resut dir")
 		;
 
 	// hidden options, allowed both on command line and
@@ -258,6 +266,64 @@ IIndexArr ParseViewsFile(const String& filename, const Scene& scene) {
 	return views;
 }
 
+namespace MVS {
+
+inline void from_json(const nlohmann::json& j, FaceViewInfo& f) {
+    j.at("mvg_view_key").get_to(f.mvg_view_key);
+    j.at("view_name").get_to(f.view_name);
+    j.at("masked_view").get_to(f.masked_view);
+    j.at("colored_model").get_to(f.colored_model);
+    j.at("depthmap").get_to(f.depthmap);
+    j.at("mvg_vertices_in_face").get_to(f.mvg_vertices_in_face);
+    j.at("mvg_triangles_in_face").get_to(f.mvg_triangles_count);
+    j.at("vertice_in_face_mask_path").get_to(f.vertice_in_face_mask_path);
+    j.at("mvs_debug_dir").get_to(f.mvs_debug_dir);
+    j.at("label_counts").get_to(f.label_counts);
+	f.use_rgb_opt  = j.value("use_rgb_opt", false);
+    f.rgb_weight   = j.value("rgb_weight", 0.1f);
+}
+
+bool load_opt_views(const std::string& selected_view_path, std::vector<FaceViewInfo>& views) {
+	std::ifstream file_stream(selected_view_path);
+	
+	if (!file_stream.is_open()) {
+        return false;
+    }
+
+	try {
+        nlohmann::json j;
+        file_stream >> j;
+
+        views = j.get<std::vector<FaceViewInfo>>();
+        
+        return true; 
+    } catch (const std::exception& e) {
+        std::cerr << "JSON Error: " << e.what() << std::endl;
+    }
+	return false;
+}
+
+}
+
+bool load_vertice_faces(const std::string& vertices_face_path, std::vector<unsigned char>& masks) {
+    std::ifstream file(vertices_face_path, std::ios::binary | std::ios::ate);
+
+    if(!file.is_open()) {
+        return false;
+    }
+
+    std::streamsize size = file.tellg();
+    file.seekg(0, std::ios::beg);
+
+    masks.resize(static_cast<size_t>(size)); 
+
+    if (file.read(reinterpret_cast<char*>(masks.data()), size)) {
+		return true;
+	}
+
+	return size > 0;
+}
+
 int main(int argc, LPCTSTR* argv)
 {
 	#ifdef _DEBUGINFO
@@ -305,6 +371,45 @@ int main(int argc, LPCTSTR* argv)
 	IIndexArr views;
 	if (!OPT::strViewsFileName.empty())
 		views = ParseViewsFile(MAKE_PATH_SAFE(OPT::strViewsFileName), scene);
+
+	if(!OPT::strVerticeFacesDir.empty()) {
+		const std::string vertice_face_path = fs::path(OPT::strVerticeFacesDir.c_str()) / "selected_views.json";
+
+		std::vector<FaceViewInfo> faceViews;
+
+		// parsing json
+		if(!MVS::load_opt_views(vertice_face_path, faceViews)) {
+			VERBOSE("Failed to load selected view %s", vertice_face_path.c_str());
+			return EXIT_FAILURE;
+		}
+		
+		// convert mvs file list to map
+		std::unordered_map<std::string, int> mvs_name_indexs;
+		for (int i = 0; i < (int)scene.images.GetSize(); ++i) {
+			mvs_name_indexs[fs::path(scene.images[i].name.c_str()).filename().string()] = i;
+		}
+		
+		// find file mappings from openmvg to openmvs
+		for(auto& face_view : faceViews) {
+			auto mvg_filename = fs::path(face_view.view_name).filename();
+
+			auto it = mvs_name_indexs.find(mvg_filename);
+			if (it == mvs_name_indexs.end()) {
+				VERBOSE("Not found according image from mvs for %s", mvg_filename.c_str());
+				continue;
+			}
+			
+			if(!load_vertice_faces(face_view.vertice_in_face_mask_path, face_view.vertice_in_face_masks)) {
+				VERBOSE("Failed to load vertice face mask mapping %s", face_view.vertice_in_face_mask_path.c_str());
+				continue;
+			}
+			face_view.mvs_key = it->second;
+			// add valid mapping to mvs
+			scene.faceViews.push_back(face_view);
+		}
+
+		VERBOSE("MVG mappings size: %d, MVS mapping sizes: %d", faceViews.size(), scene.faceViews.size());
+	}
 
 	// compute mesh texture
 	TD_TIMER_START();

@@ -42,9 +42,10 @@ public:
 		EnergyType cost;
 	};
 
-	typedef EnergyType (STCALL *FncSmoothCost)(NodeID, NodeID, LabelID, LabelID);
+	using FncSmoothCost = std::function<EnergyType(NodeID, NodeID, LabelID, LabelID)>;
+	// typedef EnergyType (STCALL *FncSmoothCost)(NodeID, NodeID, LabelID, LabelID);
 
-protected:
+public:
 	struct DirectedEdge {
 		NodeID nodeID1;
 		NodeID nodeID2;

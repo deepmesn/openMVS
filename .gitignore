@@ -40,3 +40,4 @@ make*/
 *.log
 output_release/
 output_debug/
+.history

@@ -38,6 +38,7 @@
 
 using namespace MVS;
 
+namespace fs = std::filesystem;
 
 // D E F I N E S ///////////////////////////////////////////////////
 
@@ -281,7 +282,7 @@ public:
 	bool ListCameraFaces(FaceDataViewArr&, float fOutlierThreshold, int nIgnoreMaskLabel, const IIndexArr& views);
 
 	#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
-	bool FaceOutlierDetection(FaceDataArr& faceDatas, float fOutlierThreshold) const;
+	bool FaceOutlierDetection(FIndex faceIndex, FaceDataArr& faceDatas, float fOutlierThreshold) const;
 	#endif
 	
 	void CreateVirtualFaces(const FaceDataViewArr& facesDatas, FaceDataViewArr& virtualFacesDatas, VirtualFaceIdxsArr& virtualFaces, unsigned minCommonCameras=2, float thMaxNormalDeviation=25.f) const;
@@ -379,6 +380,84 @@ static Image8U DetectInvalidImageRegions(const Image8U3& image)
 		cv::floodFill(imageGray, mask, cv::Point(image.cols / 2, 0), 255, NULL, cv::Scalar(0), upDiff, flags);
 	mask = (mask(cv::Rect(1,1, imageGray.cols,imageGray.rows)) == 0);
 	return mask;
+}
+
+static LBPInference::EnergyType SmoothnessRGB(const std::vector<std::unordered_map<IIndex,MeshTexture::Color>>& faceColors, 
+                                              LBPInference::NodeID f1, LBPInference::NodeID f2, 
+                                              LBPInference::LabelID idxView1, LBPInference::LabelID idxView2, float weight) {
+    if(idxView1 == idxView2) return LBPInference::EnergyType(0);
+
+	if(idxView1 == 0 || idxView2 == 0) {
+		return LBPMaxEnergy;
+	}
+
+	LBPInference::LabelID v1 = idxView1 -1;
+	LBPInference::LabelID v2 = idxView2 -1;
+
+	auto it1 = faceColors[f1].find(v1);
+    auto it2 = faceColors[f2].find(v2);
+
+	if (it1 == faceColors[f1].end() || it2 == faceColors[f2].end()) {
+		return LBPMaxEnergy;
+	}
+
+    const MeshTexture::Color& c1 = faceColors[f1].at(v1);
+    const MeshTexture::Color& c2 = faceColors[f2].at(v2);
+
+    // 2. 计算加权差异 (YCbCr 空间)
+    float dy = (float)c1.x - (float)c2.x;
+    float dcb = (float)c1.y - (float)c2.y;
+    float dcr = (float)c1.z - (float)c2.z;
+    float diff = std::sqrt(2.0f * dy * dy + 0.5f * dcb * dcb + 0.5f * dcr * dcr);
+
+    const float sigma = 15.0f;
+    float penalty = LBPInference::EnergyType(std::exp(-diff* diff / (2.0 * sigma * sigma)));
+
+	return weight * LBPInference::EnergyType(penalty);
+}
+
+static void ComputeViewQualityQuantiles(FaceViewInfo& fw, MeshTexture::FaceDataViewArr& facesDatas) {
+    fw.quality_scores.clear();
+
+    for (FIndex idxFace : fw.rastered_triangles) {
+
+        const auto& faceDatas = facesDatas[idxFace];
+
+        if (faceDatas.empty()) {
+            fw.quality_scores[idxFace] = -1.0f;
+            continue;
+        }
+
+        float quality = -1.f;
+        bool found = false;
+        size_t rank = 0;
+
+        for (const auto& fd : faceDatas) {
+            if (fd.idxView == fw.mvs_key) {
+                quality = fd.quality;
+                found = true;
+				break;
+            }
+        }
+
+        if (!found) {
+            fw.quality_scores[idxFace] = -1.0f;
+            continue;
+        }
+
+        if (faceDatas.size() < 2) {
+            fw.quality_scores[idxFace] = 1.f;
+            continue;
+        }
+
+        for (const auto& fd : faceDatas) {
+            if (fd.quality < quality) {
+                ++rank;
+			}
+        }
+
+        fw.quality_scores[idxFace] = rank / float(faceDatas.size() - 1);
+    }
 }
 
 MeshTexture::MeshTexture(Scene& _scene, unsigned _nResolutionLevel, unsigned _nMinResolution)
@@ -519,6 +598,16 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 			if (!rasterer.validFace)
 				rasterer.Project(facet, triangleRasterizer);
 		}
+
+		// filter triangles out of frustum or not be visible
+		for(auto& fw : scene.faceViews) {
+			if(fw.mvs_key != idxView) {
+				continue;
+			}
+			fw.rasterFilter(idxView, faceMap);
+			fw.saveRaster();
+		}
+
 		// compute the projection area of visible faces
 		#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
 		CLISTDEF0IDX(uint32_t,FIndex) areas(faces.size());
@@ -537,7 +626,7 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 		for (int j=0; j<faceMap.rows; ++j) {
 			for (int i=0; i<faceMap.cols; ++i) {
 				const FIndex& idxFace = faceMap(j,i);
-				ASSERT((idxFace == NO_ID && depthMap(j,i) == 0) || (idxFace != NO_ID && depthMap(j,i) > 0));
+				// ASSERT((idxFace == NO_ID && depthMap(j,i) == 0) || (idxFace != NO_ID && depthMap(j,i) > 0));
 				if (idxFace == NO_ID)
 					continue;
 				FaceDataArr& faceDatas = facesDatas[idxFace];
@@ -589,6 +678,18 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 		}
 		#endif
 		}
+
+		for(auto& fw : scene.faceViews) {
+			if(fw.mvs_key != idxView) {
+				continue;
+
+			}
+			// compute quality quantiles
+			ComputeViewQualityQuantiles(fw, facesDatas);
+			fw.saveQualities();
+
+			ASSERT(fw.rastered_triangles.size() == fw.quality_scores.size(), "rastered angles are not equal to quality triangles");
+		}
 		++progress;
 	}
 	#ifdef TEXOPT_USE_OPENMP
@@ -597,12 +698,33 @@ bool MeshTexture::ListCameraFaces(FaceDataViewArr& facesDatas, float fOutlierThr
 	#endif
 	progress.close();
 
+	if(!scene.faceViews.empty() && scene.faceViews[0].use_rgb_opt) {
+		auto& faceColores = scene.faceViews[0].faceColors;
+		faceColores.resize(facesDatas.GetSize());
+
+		FOREACH(f, facesDatas) {
+			const FaceDataArr& faceDatas = facesDatas[f];
+			for(FaceData& faceData : faceDatas) {
+				faceColores[f][faceData.idxView] = faceData.color;
+			}
+		}
+	}
+
 	#if TEXOPT_FACEOUTLIER != TEXOPT_FACEOUTLIER_NA
 	if (fOutlierThreshold > 0) {
 		// try to detect outlier views for each face
 		// (views for which the face is occluded by a dynamic object in the scene, ex. pedestrians)
-		for (FaceDataArr& faceDatas: facesDatas)
-			FaceOutlierDetection(faceDatas, fOutlierThreshold);
+		// for (FaceDataArr& faceDatas: facesDatas)
+		// 	FaceOutlierDetection(faceDatas, fOutlierThreshold);
+
+		FOREACH(f, facesDatas) {
+			FaceDataArr& faceDatas = facesDatas[f];
+			FaceOutlierDetection(f, faceDatas, fOutlierThreshold);
+		}
+
+		for(FaceViewInfo& fw : scene.faceViews) {
+			fw.saveGaussians();
+		}
 	}
 	#endif
 	return true;
@@ -877,7 +999,7 @@ inline T MultiGaussUnnormalized(const Eigen::Matrix<T,N,1>& X, const Eigen::Matr
 
 // decrease the quality of / remove all views in which the face's projection
 // has a much different color than in the majority of views
-bool MeshTexture::FaceOutlierDetection(FaceDataArr& faceDatas, float thOutlier) const
+bool MeshTexture::FaceOutlierDetection(FIndex faceIndex, FaceDataArr& faceDatas, float thOutlier) const
 {
 	// reject all views whose gauss value is below this threshold
 	if (thOutlier <= 0)
@@ -949,12 +1071,18 @@ bool MeshTexture::FaceOutlierDetection(FaceDataArr& faceDatas, float thOutlier) 
 					bChanged = true;
 				}
 			}
+
+			for(FaceViewInfo& fw : scene.faceViews) {
+				if(i == fw.mvs_key && fw.rastered_triangles.find(faceIndex) != fw.rastered_triangles.end()) {
+					fw.gaussians_scores[faceIndex] = {inlier ? 1: 0, gaussValue};
+				}
+			}
 		}
-		if (numInliers == faceDatas.size())
+		if (numInliers == faceDatas.size()) 
 			return true;
-		if (numInliers < minInliers)
+		if (numInliers < minInliers) 
 			return false;
-		if (!bChanged)
+		if (!bChanged) 
 			break;
 	}
 
@@ -980,9 +1108,26 @@ bool MeshTexture::FaceOutlierDetection(FaceDataArr& faceDatas, float thOutlier) 
 #endif
 
 bool MeshTexture::FaceViewSelection(unsigned minCommonCameras, float fOutlierThreshold, float fRatioDataSmoothness, int nIgnoreMaskLabel, const IIndexArr& views)
-{
+{	
+	if(scene.faceViews.size() > 0) {
+		FOREACH(f, faces) { 
+			const Face& face = faces[f]; 
+
+			for(FaceViewInfo& fw : scene.faceViews) {
+				if(fw.face_in_mask(face)) {
+					fw.mvg_triangles.insert(f);
+				}
+			}
+		}	
+
+		for(FaceViewInfo& fw : scene.faceViews) {
+			VERBOSE("Image name: %s, triangles count: (Total: %d), (MVS(before), %d), (MVG, %d)", fw.view_name.c_str(), faces.GetSize(), fw.mvg_triangles.size(), fw.mvg_triangles_count);
+		}
+	}
+
 	// extract array of triangles incident to each vertex
 	ListVertexFaces();
+
 
 	// create texture patches
 	{
@@ -993,6 +1138,26 @@ bool MeshTexture::FaceViewSelection(unsigned minCommonCameras, float fOutlierThr
 		FaceDataViewArr facesDatas;
 		if (!ListCameraFaces(facesDatas, fOutlierThreshold, nIgnoreMaskLabel, views))
 			return false;
+	
+		if(!scene.faceViews.empty()) {
+			for(FaceViewInfo& fw : scene.faceViews) {				
+				// filter faces by quality hist
+				fw.qualityFilter();
+				
+				VERBOSE("Image: %s, \n"
+						"\tRaster triangles: %d\n"
+						"\tQuality triangles: %d\n"
+						"\tGaussian triangles: %d\n"
+						"\tValid gaussians: %d, \n"
+						"\tQuality filtered triangles: %d",
+						std::filesystem::path(fw.view_name).filename().string().c_str(), 
+						fw.rastered_triangles.size(), 
+						fw.quality_scores.size(), 
+						fw.gaussians_scores.size(), 
+						fw.validGaussians(),
+						fw.quality_filtered_triangles.size());
+				}
+		}
 
 		// create faces graph
 		typedef boost::adjacency_list<boost::vecS, boost::vecS, boost::undirectedS> Graph;
@@ -1157,6 +1322,11 @@ bool MeshTexture::FaceViewSelection(unsigned minCommonCameras, float fOutlierThr
 
 		// start patch creation starting directly from individual faces
 		if (!bUseVirtualFaces) {
+
+			auto isFixedFace = [&](FIndex f) {
+				return scene.faceViews.empty()? false : (scene.faceViews[0].quality_filtered_triangles.find(f) != scene.faceViews[0].quality_filtered_triangles.end());
+			};
+
 			// assign the best view to each face
 			labels.resize(faces.size()); {
 				// normalize quality values
@@ -1178,7 +1348,16 @@ bool MeshTexture::FaceViewSelection(unsigned minCommonCameras, float fOutlierThr
 				const LBPInference::EnergyType MaxEnergy(fRatioDataSmoothness*LBPMaxEnergy);
 				LBPInference inference; {
 					inference.SetNumNodes(faces.size());
-					inference.SetSmoothCost(SmoothnessPotts);
+					// inference.SetSmoothCost(SmoothnessPotts);
+
+					if(!scene.faceViews.empty() && scene.faceViews[0].use_rgb_opt) {
+						inference.SetSmoothCost([&](LBPInference::NodeID f1, LBPInference::NodeID f2, LBPInference::LabelID idxView1, LBPInference::LabelID idxView2){
+							return SmoothnessRGB(scene.faceViews[0].faceColors, f1, f2, idxView1, idxView2, scene.faceViews[0].rgb_weight);
+						});
+					} else {
+						inference.SetSmoothCost(SmoothnessPotts);
+					}
+
 					EdgeOutIter ei, eie;
 					FOREACH(f, faces) {
 						for (boost::tie(ei, eie) = boost::out_edges(f, graph); ei != eie; ++ei) {
@@ -1198,6 +1377,12 @@ bool MeshTexture::FaceViewSelection(unsigned minCommonCameras, float fOutlierThr
 						inference.SetDataCost(Label(0), f, MaxEnergy);
 						continue;
 					}
+					if(isFixedFace(f)) {
+						const Label label((Label)scene.faceViews[0].mvs_key+1);
+						inference.SetDataCost(label, f, 0.0);
+						continue;
+					}
+
 					for (const FaceData& faceData: faceDatas) {
 						const Label label((Label)faceData.idxView+1);
 						const float normalizedQuality(faceData.quality>=normQuality ? 1.f : faceData.quality/normQuality);
@@ -2005,7 +2190,9 @@ void MeshTexture::GenerateTexture(bool bGlobalSeamLeveling, bool bLocalSeamLevel
 			for (int i=0; i<3; ++i) {
 				texcoords[i] = imageData.camera.ProjectPointP(vertices[face[i]]);
 				ASSERT(imageData.image.isInsideWithBorder(texcoords[i], border));
-				aabb.InsertFull(texcoords[i]);
+				if(imageData.image.isInsideWithBorder(texcoords[i], border)){
+					aabb.InsertFull(texcoords[i]);
+				}
 			}
 		}
 		// compute relative texture coordinates

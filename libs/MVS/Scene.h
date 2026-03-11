@@ -38,6 +38,7 @@
 #include <functional>
 #include "SceneDensify.h"
 #include "Mesh.h"
+#include <type_traits>
 
 // D E F I N E S ///////////////////////////////////////////////////
 
@@ -45,6 +46,190 @@
 // S T R U C T S ///////////////////////////////////////////////////
 
 namespace MVS {
+
+struct FaceViewInfo {
+	using Path = std::filesystem::path;
+
+	// mvg view key
+    int mvg_view_key = -1;
+	
+	// view full name
+    std::string view_name;
+	
+	std::string masked_view;
+
+	std::string colored_model;
+
+	// view depthmap
+    std::string depthmap;
+	
+	std::string vertice_in_face_mask_path;
+	std::string mvs_debug_dir;
+
+	bool use_rgb_opt = 0;
+	float rgb_weight = 0.1;
+
+	// the num of vertices within face
+    int mvg_vertices_in_face = 0;
+
+	int mvg_triangles_count = 0;
+	
+	// the binary maks to denote whether the vertice is in current view face
+	std::vector<unsigned char> vertice_in_face_masks;
+
+	// face parsing label counts
+    std::map<std::string, int> label_counts;
+
+	// mvs view key
+	int mvs_key = -1;
+
+	std::vector<std::unordered_map<IIndex, Point3f>> faceColors;
+
+	std::set<uint32_t> mvg_triangles;
+	std::unordered_set<uint32_t> rastered_triangles;
+	std::unordered_map<uint32_t, float> quality_scores;
+	std::unordered_map<uint32_t, std::pair<uint32_t, float>> gaussians_scores;
+	std::unordered_set<uint32_t> quality_filtered_triangles;
+
+	int outlier_removal_result = 0;
+
+	bool face_in_mask(const Mesh::Face& face) {
+		return vertice_in_face_masks[face.x] 
+				&& vertice_in_face_masks[face.y] 
+				&& vertice_in_face_masks[face.z];
+	}
+
+	void rasterFilter(IIndex idxView, TImage<cuint32_t>& faceMap) {
+		if(mvs_key == -1 || mvs_key != idxView) {
+			return;
+		}
+
+		rastered_triangles.clear();
+
+		std::set<Mesh::FIndex> validViews;
+
+		// discard any triangles that are not in facemap
+		for (int j=0; j<faceMap.rows; ++j) {
+			for (int i=0; i<faceMap.cols; ++i) {
+				const Mesh::FIndex& idxFace = faceMap(j,i);
+				if (idxFace != NO_ID ) {
+					validViews.insert(idxFace);
+				}
+			}
+		}
+
+		std::set_intersection(
+			mvg_triangles.begin(), 
+			mvg_triangles.end(),
+			validViews.begin(), 
+			validViews.end(),
+			std::inserter(rastered_triangles, rastered_triangles.begin())
+		);
+
+		VERBOSE("Image name: %s, (MVG Key: %d, Faces: %d), (MVS Key: %d, MVS Faces(before): %d, MVS Faces(after): %d)", 
+			view_name.c_str(), mvg_view_key, mvg_triangles_count,
+			mvs_key, mvg_triangles.size(), rastered_triangles.size());
+	}
+
+	template <typename T>
+	struct is_pair : std::false_type {};
+
+	template <typename K, typename V>
+	struct is_pair<std::pair<K, V>> : std::true_type {};
+
+	template <typename T>
+	void write_any(std::ofstream& file, const T& val) {
+		if constexpr (is_pair<T>::value) {
+			write_any(file, val.first);
+			write_any(file, val.second);
+		} else {
+			static_assert(std::is_trivially_copyable_v<T>, "Only POD types allowed for binary write.");
+			file.write(reinterpret_cast<const char*>(&val), sizeof(T));
+		}
+	}	
+	template<typename Container>
+	void saveContainer(const Container& container, const std::string& suffix, const std::string& desc = "") {
+		// base file name
+		const std::string filename = std::filesystem::path(view_name).stem().string();
+
+		if (container.empty()) {
+			VERBOSE("Image: %s, %s are empty!", filename.c_str(), desc.c_str());
+			return;
+		}
+
+		if(mvs_debug_dir.empty() || !std::filesystem::exists(mvs_debug_dir)) {
+			VERBOSE("Image: %s, mvs output dir is empty!", filename.c_str());
+			return;
+		}
+		
+		Path output_path = Path(mvs_debug_dir) / (filename + suffix);
+
+		std::ofstream file(output_path, std::ios::binary);
+		if (!file.is_open()) {
+			VERBOSE("Failed to open file %s", output_path.string().c_str());
+			return;
+		}
+
+		uint32_t count = static_cast<uint32_t>(container.size());
+		file.write(reinterpret_cast<const char*>(&count), sizeof(uint32_t));
+		
+		for (const auto& item : container) {
+       		write_any(file, item);
+   		}
+
+		file.close();
+		VERBOSE("Image: %s, Write %s(%d) to %s", filename.c_str(), desc.c_str(), count, output_path.string().c_str());
+	}
+
+	void saveRaster() {
+		saveContainer(rastered_triangles, "_raster.bin", "rastered faces");
+	}
+
+	void saveQualities() {
+		saveContainer(quality_scores, "_quality.bin", "quality faces");
+	}
+
+	void saveGaussians() {
+		saveContainer(gaussians_scores, "_gaussian.bin", "gaussian faces");
+	}
+
+	int validGaussians() {
+		return std::count_if(gaussians_scores.begin(), gaussians_scores.end(), [](const auto& pair) { 
+			return pair.second.first == 1; 
+		});
+	}
+
+	void qualityFilter(int remove_bins = 2) {
+		if(quality_scores.empty()) {
+			return;
+		}
+
+		const int num_bins = 20;
+		
+		std::vector<std::vector<unsigned int>> bin_faces(num_bins);
+		// hist
+		for (auto const& [face_id, quality] : quality_scores) {
+			int bin_idx = quality <= 0.0f ? 0 : static_cast<int>(quality * num_bins);
+
+			if (bin_idx >= num_bins) {
+				bin_idx = num_bins - 1;
+			}
+
+			bin_faces[bin_idx].push_back(face_id);
+		}
+
+		quality_filtered_triangles.clear();
+        for (auto const& [face_id, quality] : quality_scores) {
+            quality_filtered_triangles.insert(face_id);
+        }
+
+		for (int i = 0; i < remove_bins && i < num_bins; ++i) {
+			for (unsigned int face_id : bin_faces[i]) {
+                quality_filtered_triangles.erase(face_id);
+            }
+		}
+	}
+};
 
 // Forward declarations
 struct MVS_API DenseDepthMapData;
@@ -65,6 +250,7 @@ public:
 
 	std::function<bool(uint32_t, DepthData&)> selecViewsCallback;
 	std::function<void(uint32_t, DepthData&)> initDepthMapCallback;
+	std::vector<FaceViewInfo> faceViews;
 public:
 	inline Scene(unsigned _nMaxThreads=0)
 		: obb(true), transform(Matrix4x4::IDENTITY), nMaxThreads(Thread::getMaxThreads(_nMaxThreads)) {}
