@@ -188,6 +188,9 @@ public:
 	void ThProcessPair(uint32_t idxImageA, uint32_t idxImageB);
 	void ThSmoothVertices1(VIndex idxStart, VIndex idxEnd);
 	void ThSmoothVertices2(VIndex idxStart, VIndex idxEnd);
+	
+	template <class T>
+	void ComputeSmoothessGradient();
 
 public:
 	const Real weightRegularity; // a scalar regularity weight to balance between photo-consistency and regularization terms
@@ -568,6 +571,36 @@ void MeshRefine::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned nClos
 	#endif
 }
 
+template <class T>
+void MeshRefine::ComputeSmoothessGradient() {
+	
+	static_assert(std::is_base_of<Event, T>::value, "T must derive from Event");
+
+	ASSERT(events.IsEmpty());
+
+	if constexpr (std::is_same_v<T, EVTSmoothVertices1>) {
+        smoothGrad1.Resize(vertices.GetSize());
+    } else if constexpr (std::is_same_v<T, EVTSmoothVertices2>) {
+        smoothGrad2.Resize(vertices.GetSize());
+    }
+
+	const size_t nThreads = threads.GetSize();
+	const VIndex nTotalVertices = vertices.GetSize();
+
+	// compute Grad1 with multi-threads
+	for (size_t i = 0; i < nThreads; ++i) {
+		const VIndex idxStart = (nTotalVertices * i) / nThreads;
+		const VIndex idxEnd = (nTotalVertices * (i + 1)) / nThreads;
+
+		if (idxStart < idxEnd) {
+        	events.AddEvent(new T(idxStart, idxEnd));
+    	}
+	}
+
+	// Blocking until all threads complete
+	WaitThreadWorkers(nThreads > nTotalVertices ? nTotalVertices : nThreads);
+	ASSERT(events.IsEmpty());	
+}
 
 // score mesh using photo-consistency
 // and compute vertices gradient using analytical method
@@ -609,34 +642,18 @@ double MeshRefine::ScoreMesh(double* gradients)
 				events.AddEvent(ip ? new EVTProcessPair(pPair->j,pPair->i) : new EVTProcessPair(pPair->i,pPair->j));
 		}
 	}
+
 	WaitThreadWorkers(nAlternatePair ? pairs.GetSize() : pairs.GetSize()*2);
+	ASSERT(events.IsEmpty());
 
 	// loop through all vertices and compute the smoothing score
 	scoreSmooth = 0;
-	const VIndex idxStep((vertices.GetSize()+(VIndex)threads.GetSize()-1)/(VIndex)threads.GetSize());
-	smoothGrad1.Resize(vertices.GetSize());
-	{
-	ASSERT(events.IsEmpty());
-	VIndex idx(0);
-	while (idx<vertices.GetSize()) {
-		const VIndex idxNext(MINF(idx+idxStep, vertices.GetSize()));
-		events.AddEvent(new EVTSmoothVertices1(idx, idxNext));
-		idx = idxNext;
-	}
-	WaitThreadWorkers(threads.GetSize());
-	}
-	// loop through all vertices and compute the smoothing gradient
-	smoothGrad2.Resize(vertices.GetSize());
-	{
-	ASSERT(events.IsEmpty());
-	VIndex idx(0);
-	while (idx<vertices.GetSize()) {
-		const VIndex idxNext(MINF(idx+idxStep, vertices.GetSize()));
-		events.AddEvent(new EVTSmoothVertices2(idx, idxNext));
-		idx = idxNext;
-	}
-	WaitThreadWorkers(threads.GetSize());
-	}
+
+	// compute Grad1
+	ComputeSmoothessGradient<EVTSmoothVertices1>();
+
+	// compute Grad2
+	ComputeSmoothessGradient<EVTSmoothVertices2>();
 
 	// set the final gradient as the combination of photometric and smoothness gradients
 	if (ratioRigidityElasticity >= 1.f) {
